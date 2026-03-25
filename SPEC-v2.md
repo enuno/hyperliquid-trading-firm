@@ -23,21 +23,21 @@
 │  └──────┬───────┘                                               │
 │         │ accepted (Sharpe ≥ threshold)                         │
 └─────────┼───────────────────────────────────────────────────────┘
-│ git commit + ArgoCD deploy
-▼
+          │ git commit + ArgoCD deploy
+          ▼
 ┌─────────────────────────────────────┐
 │         PAPER BOT (always on)       │  ← real-time reinforcement data
 │  strategy_paper.py                  │    every trade logged to RL buffer
 │  HyperLiquid paper wallet           │
 └──────────────┬──────────────────────┘
-│ reinforcement signal (win/loss/edge deltas)
-│ fed back into next autoresearch iteration
-▼
+               │ reinforcement signal (win/loss/edge deltas)
+               │ fed back into next autoresearch iteration
+               ▼
 ┌─────────────────────────────────────┐
 │         LIVE BOT (guarded)          │
-│  strategy_live.py ← promoted from  │
+│  strategy_live.py ← promoted from   │
 │  paper only when paper Sharpe≥1.5   │
-│  AND paper win_rate≥45% over 48h   │
+│  AND paper win_rate≥45% over 48h    │
 │                                     │
 │  ┌─────────────────────────────┐    │
 │  │  PROFIT VAULT               │    │
@@ -46,8 +46,8 @@
 │  └─────────────────────────────┘    │
 │                                     │
 │  DRAWDOWN GUARD: if equity drops    │
-│  to 50% of start → CEASE TRADING   │
-│  → trigger Recovery Mode           │
+│  to 50% of start → CEASE TRADING    │
+│  → trigger Recovery Mode            │
 └─────────────────────────────────────┘
 
 ```
