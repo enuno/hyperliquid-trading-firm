@@ -1,0 +1,47 @@
+/* Dense technical layout: small margins, page numbers, textbook-like */
+@page {
+  size: letter;
+  margin: 0.5in 0.6in;
+}
+/* Page numbers in print: enable "Headers and footers" in browser Print dialog for "Page X of Y" */
+* { box-sizing: border-box; }
+body {
+  font-family: "Latin Modern Roman", "Times New Roman", serif;
+  font-size: 10pt;
+  line-height: 1.35;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 0.4in;
+  color: #111;
+}
+@media print {
+  body { padding: 0; }
+  .page-break { page-break-before: always; }
+  a { color: #000; }
+}
+h1, h2, h3, h4 { font-weight: 600; margin-top: 1em; margin-bottom: 0.4em; page-break-after: avoid; }
+h1 { font-size: 1.4em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.2em; }
+h3, h4 { font-size: 1.05em; }
+p { margin: 0.4em 0 0.6em; text-align: justify; }
+ul, ol { margin: 0.4em 0 0.6em; padding-left: 1.5em; }
+li { margin: 0.2em 0; }
+table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 9.5pt; page-break-inside: avoid; }
+th, td { border: 1px solid #333; padding: 0.25em 0.4em; text-align: left; }
+th { background: #f0f0f0; }
+pre, code { font-family: "Consolas", "Monaco", monospace; font-size: 9pt; }
+pre { background: #f8f8f8; padding: 0.5em; overflow-x: auto; margin: 0.5em 0; border: 1px solid #ddd; page-break-inside: avoid; }
+code { background: #f0f0f0; padding: 0.1em 0.25em; }
+blockquote { margin: 0.5em 0; padding-left: 1em; border-left: 3px solid #999; color: #444; }
+hr { border: none; border-top: 1px solid #999; margin: 1em 0; }
+strong { font-weight: 600; }
+/* Page number for browsers that support it */
+@supports (content: counter(page)) {
+  body::after { display: none; }
+}
+/* Fallback footer for print */
+@media print {
+  body {
+    padding-bottom: 1in;
+  }
+}
