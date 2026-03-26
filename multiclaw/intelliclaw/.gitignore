@@ -1,0 +1,17 @@
+operations/IntelliClaw/live/*
+!operations/IntelliClaw/live/.gitkeep
+*.log
+cycle.log
+**/signalcockpit-auth.json
+**/*token*
+**/*secret*
+.env
+.env.*
+MEMORY.md
+USER.md
+SOUL.md
+AGENTS.md
+TOOLS.md
+__pycache__/
+*.pyc
+node_modules/
