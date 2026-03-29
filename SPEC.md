@@ -1,902 +1,707 @@
-# SPEC.md — HyperLiquid Autonomous Trading Firm
+# hyperliquid-trading-firm — System Specification
 
-**Version:** 0.3.0  
-**Supersedes:** SPEC-v1.md (v0.1.0), SPEC-v2.md (v0.2.0)  
-**Deployment:** Kubernetes (ServerDomes edge cluster) via ArgoCD GitOps  
-**Languages:** Python 3.11+ (agents, strategies, executors) · TypeScript 5.x (orchestrator API, SAE engine) · React/Next.js (dashboard)  
-**Status:** Experimental research software — not audited for large-capital use  
-**Analogy:** autoresearch `train.py` → `strategy_paper.py` | `program.md` → `trading_program.md`
+> **Version:** 2.0.0-draft
+> **Last updated:** 2026-03-29
+> **Status:** Active development — paper trading target
+> **Repo:** https://github.com/enuno/hyperliquid-trading-firm
 
 ---
 
-## 1. System Architecture Overview
+## 1. Purpose and Scope
 
-### 1.1 Service Map
+`hyperliquid-trading-firm` is an **auditable, modular, multi-agent trading system** targeting
+HyperLiquid perpetuals. It is modeled after the organizational structure of a real trading firm,
+implementing the architecture described in the
+[TradingAgents paper (arXiv 2412.20138)](https://arxiv.org/pdf/2412.20138) and the
+[TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) open-source
+framework, extended with:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                  OpenClaw Controller  (optional external)           │
-│     Triggers decision cycles · Adjusts SAE policies · Reads traces  │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │  REST / WebSocket
-┌──────────────────────────────▼──────────────────────────────────────┐
-│              apps/orchestrator-api  (Node/TypeScript)               │
-│  Decision cycle:                                                     │
-│    Analysts → Research Debate → Trader → Risk Council →             │
-│    Fund Manager → SAE Engine → Executor                             │
-└───────┬────────────────────────────────────────────┬────────────────┘
-        │ internal RPC                               │ validated plan
-┌───────▼──────────────────────────┐   ┌────────────▼────────────────┐
-│   apps/agents  (Python)          │   │  apps/sae-engine  (TS)      │
-│  ┌──────────────────────────┐    │   │  Leverage / size / dd caps  │
-│  │  IntelliClaw client      │    │   │  Staged execution plans     │
-│  │  get_intel_snapshot()    │    │   │  TWAP / VWAP / POV / Ice    │
-│  │  search_events()         │    │   │  Non-bypassable guardrail   │
-│  │  iter_alert_stream()     │    │   └────────────┬────────────────┘
-│  └──────────────────────────┘    │                │ execution plan
-│  Analysts · Researchers          │   ┌────────────▼────────────────┐
-│  Trader · Risk Council           │   │  apps/executors  (Python)   │
-│  Fund Manager                    │   │  HyperLiquid perps          │
-└──────────────────────────────────┘   │  Hummingbot MM/arb          │
-                                       │  DEX gateway                │
-┌──────────────────────────────────────┴─────────────────────────────┐
-│        Autoresearch Loop  (apps/jobs)                               │
-│  Paper Bot (24/7) → RL Buffer → Overnight Loop (~100 iter) →       │
-│  Backtest Score → Git Commit → ArgoCD → Paper Bot → Live Promotion  │
-└────────────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────────────┐
-│  multiclaw/mlflow  — experiment tracking for all ML/RL/OPRO jobs    │
-│  MLflow + Postgres + MinIO  (MLFLOW_TRACKING_URI env var)           │
-└─────────────────────────────────────────────────────────────────────┘
-```
+- A **Safety Approval Engine (SAE)** for deterministic, non-bypassable pre-execution policy
+  enforcement
+- An **OpenClaw control plane** adapter for operator governance, HITL, and strategy lifecycle
+  management
+- A **Clawvisor HITL ruleset** system for operator-defined approval requirements
+- A **treasury management** module for automated BTC-to-stablecoin conversion and risk exposure
+  control
+- Full **DecisionTrace** persistence so every trade decision is replayable and attributable
 
-### 1.2 Multi-Agent Firm Structure
-
-Each decision cycle runs in strict sequence:
-
-1. **Analyst Agents** — Market, News, Fundamental, On-chain, Sentiment  
-   Each analyst calls the IntelliClaw client, builds a typed `AnalystReport`,  
-   and returns it to the orchestrator.
-2. **Research Debate** — Bullish Researcher vs. Bearish Researcher; Facilitator  
-   synthesises the bull/bear case into a structured `ResearchSummary`.
-3. **Trader Agent** — Consumes all reports, selects a `BaseStrategy` plugin  
-   and proposes a `TradeDecision` (asset, direction, size, entry type).
-4. **Risk Council** — Three profiles (aggressive / neutral / conservative) vote  
-   independently. Majority or unanimous veto required depending on config.
-5. **Fund Manager** — Applies portfolio-level constraints (concentration, corr,  
-   daily loss limit) and produces an approved `TradeOrder`.
-6. **SAE Engine** — Non-bypassable guardrail. Validates leverage, size, drawdown  
-   policies; builds a staged execution plan with algo hints.
-7. **Executor** — Venue adapter places real orders via the HL SDK, Hummingbot,  
-   or DEX gateway.
-
-> **Rule:** Agents must never call executors directly. All trades MUST pass
-> through the SAE engine.
-
-### 1.3 HyperLiquid API Integration
-
-Uses [`hyperliquid-python-sdk`](https://github.com/hyperliquid-dex/hyperliquid-python-sdk) exclusively.
-
-| Interface | Use | Rationale |
-|:--|:--|:--|
-| WS `subscribe` | Trades, L2 book, candles (real-time) | Sub-100 ms latency for entry triggers |
-| REST `info.candles_snapshot` | Historical OHLCV for backtest | Rate-limited; startup only |
-| REST `exchange.order` | Order placement / cancel | Stateless, auditable |
-| REST `info.user_state` | Position / margin poll (1 Hz) | Reconciles WS state drift |
-| WS `candleSnapshot` stream | 1-minute live candle feed for dashboard | Incremental updates |
-
-### 1.4 Key Management
-
-```
-K8s Secret → env var → agent/exchange.py (read-once at init)
-```
-
-- `HL_PRIVATE_KEY` — injected by K8s Secret; read once into a non-exportable `LocalAccount`
-- `VAULT_SUBACCOUNT_ADDRESS` — injected by K8s Secret; **no code path may write to this value**
-- `TRADE_MODE=paper|live` — per-pod flag; default `paper`; live requires `TRADE_MODE_CONFIRM=yes`
-- No key material ever reaches `strategy_paper.py` or any agent-writable file
+This system treats **live execution as safety-critical**. No LLM output is ever executable trading
+authority on its own. All adaptation happens off the hot path through versioned artifacts and
+explicit promotion gates.
 
 ---
 
-## 2. IntelliClaw — Market Intelligence Layer
+## 2. Design Principles
 
-IntelliClaw is the external multi-source market intelligence service. All analyst
-agents consume data exclusively through `apps/agents/src/tools/intelliclaw_client.py`.
-
-### 2.1 Client Functions
-
-| Function | Signature | Purpose |
-|:--|:--|:--|
-| `get_intel_snapshot` | `(asset, window_hours=24, bypass_cache=False)` | Normalised `IntelSnapshot`; TTL-cached (default 60 s) |
-| `search_events` | `(asset, window, limit, importance)` | Historical events (news, exploits, protocol changes) |
-| `iter_alert_stream` | `(asset, poll_interval=5.0, max_alerts=None)` | Polling generator yielding live `IntelAlert` objects |
-| `get_multi_snapshot` | `(assets, window_hours=24)` | Batch wrapper; errors per-asset are logged and skipped |
-
-Configuration via environment:
-```bash
-INTELLICLAW_URL=http://intelliclaw:8080   # required
-INTELLICLAW_API_KEY=<bearer-token>         # optional
-INTELLICLAW_CACHE_TTL=60                  # seconds
-```
-
-The client uses a `requests.Session` with `Retry(total=3, backoff_factor=0.5,
-status_forcelist=[429,500,502,503,504])`. `IntelliClawError` (a `RuntimeError`
-subclass) is raised on non-retryable failures and must be surfaced to the
-orchestrator — never swallowed silently.
-
-**Note:** The in-process `_snapshot_cache` dict is not shared across OS processes.
-Replace with a Redis-backed cache for multi-worker deployments.
-
-### 2.2 IntelSnapshot Schema
-
-```
-IntelSnapshot
-  ├── asset: str                        # e.g. "BTC"
-  ├── as_of: str                        # ISO-8601 UTC
-  ├── window_hours: int                 # default 24
-  ├── overall_sentiment: SentimentLabel # bullish|bearish|mixed|neutral
-  ├── confidence: float                 # 0.0–1.0
-  ├── sentiment_score: float            # –1.0 to +1.0
-  ├── key_points: List[str]
-  ├── narrative_summary: Optional[str]
-  ├── headlines: List[IntelHeadline]
-  │     └── source, title, url, published_at, sentiment,
-  │         importance, summary, tags
-  ├── onchain: Optional[IntelOnChain]
-  │     └── net_flows_usd, whale_tx_count, exchange_reserves_change_pct,
-  │         active_addresses_change_pct, miner_outflow_usd,
-  │         funding_rate, open_interest_change_pct
-  ├── fundamental: Optional[IntelFundamental]
-  │     └── regime, fear_greed_index, dominance_btc_pct, macro_notes
-  ├── alerts: List[IntelAlert]
-  │     └── alert_id, severity, message, source, fired_at, tags
-  ├── source_count: int
-  └── intel_version: str               # "1.0"
-```
-
-**Helpers:**
-- `.has_critical_alerts` → `bool`
-- `.high_importance_headlines` → `List[IntelHeadline]`
-- `.to_analyst_context()` → compact LLM-ready string (use for prompt injection)
-
-### 2.3 Analyst Agent Pattern
-
-Every analyst in `apps/agents/src/agents/` must follow this pattern:
-
-```python
-from ..tools.intelliclaw_client import get_intel_snapshot
-from ..types.intel import IntelSnapshot
-
-class <Role>AnalystAgent:
-    def generate_report(self, asset: str) -> <Role>AnalystReport:
-        intel = get_intel_snapshot(asset)
-        # Build typed AnalystReport from intel.*
-        # Use intel.to_analyst_context() for LLM prompt injection
-        ...
-```
-
-`SentimentAnalystAgent` (`sentiment_analyst.py`) is the reference implementation.
-All other stubs are empty and must be implemented following this pattern.
+| Principle | Implementation |
+|---|---|
+| Role specialization over monolithic agents | Separate analyst, debate, trader, risk, fund-manager agents per TradingAgents |
+| Structured state over prompt chaining | Typed JSON/protobuf artifacts at every handoff |
+| Adversarial challenge before commitment | Bull/bear debate rounds before TradeIntent |
+| Hard safety gates | SAE enforces policy; cannot be bypassed by any agent or operator API call |
+| Full auditability | Every artifact keyed on `cycle_id`; DecisionTrace persisted immutably |
+| Adaptation off the hot path | Prompt-policy changes, strategy upgrades require explicit versioned promotion |
+| No-trade is a first-class outcome | HOLD/FLAT emitted when consensus is weak or risk objects unresolved |
+| Live execution requires human approval | Clawvisor HITL ruleset gates all live-mode cycles |
 
 ---
 
-## 3. Strategy Architecture
+## 3. Repository Structure
 
-### 3.1 Three-Tier Promotion Lifecycle
-
-Strategies flow through three tiers. Promotion is one-way except when recovery
-mode triggers a demotion.
-
-```
-BACKTEST  ────────────────────────────────────────────────────────────
-  Sharpe ≥ 1.5  AND  max_dd < 8%  AND  n_trades ≥ 10
-    │
-    ▼
-PAPER TRADE  ────────────────────────────────────────────────────────
-  (runs continuously 24/7 on BTC-PERP)
-  Sharpe ≥ 1.5  AND  win_rate ≥ 45%  AND  n_trades ≥ 30  over 48 h
-    │
-    ▼
-LIVE TRADE  ─────────────────────────────────────────────────────────
-  Real funds; vault active; drawdown guards armed
-    │  if equity ≤ 50% of session_start_equity
-    ▼
-RECOVERY MODE  ──────────────────────────────────────────────────────
-  Live halted → accelerated research (200 iter/night)
-  Raised bar: Sharpe ≥ 2.0  AND  win_rate ≥ 50%  AND  72 h paper
-```
-
-### 3.2 Dual-File Architecture
-
-```
-apps/agents/src/strategies/
-  base_strategy.py        ← OpenTrader-style interface (locked)
-strategy/
-  strategy_base.py        ← Abstract ABC interface (locked)
-  strategy_paper.py       ← AGENT-EDITABLE; paper bot target
-  strategy_live.py        ← Written by promotion logic ONLY
-  strategy_vault.py       ← Vault rate config (rate editable; address locked)
-```
-
-### 3.3 BaseStrategy Interface (`apps/agents/src/strategies/base_strategy.py`)
-
-OpenTrader-style interface consumed by the Trader Agent and strategy plugins:
-
-```python
-class BaseStrategy:
-    name: str = "BaseStrategy"
-    description: str = ""
-    parameters_schema: dict = {}   # JSON-schema for UI / autogen
-
-    def __init__(self, symbol: str, parameters: dict): ...
-    def on_start(self, ctx) -> None: ...
-    def on_stop(self, ctx) -> None: ...
-    def on_bar(self, bar, ctx) -> None: ...
-    def generate_signals(self, ctx) -> list[dict]:
-        # Returns [{"action": "buy", "size": 0.1, "type": "market"}, ...]
-        # SAE / execution layer validates and transforms to orders.
-        return []
-```
-
-Strategy plugins: `grid_bot.py`, `dca_bot.py`, `rsi_reversion.py`,
-`hyperliquid_perps_meta.py` — all extend `BaseStrategy`.
-
-### 3.4 StrategyConfig (`strategy/strategy_base.py`, locked ABC)
-
-The ABC-layer config used by the autoresearch loop:
-
-```python
-@dataclass
-class StrategyConfig:
-    # Indicators — agent editable
-    ema_fast: int = 9;  ema_slow: int = 21
-    rsi_period: int = 14;  rsi_oversold: float = 30.0;  rsi_overbought: float = 70.0
-    atr_period: int = 14;  atr_stop_multiplier: float = 2.0
-    bb_period: int = 20;  bb_std: float = 2.0
-    vwap_enabled: bool = False
-
-    # Signal logic — agent editable
-    entry_signal: Literal["ema_cross","rsi_reversal","breakout",
-                          "bb_squeeze","vwap_reversion","hybrid"] = "ema_cross"
-    exit_signal: Literal["atr_trail","fixed_tp_sl","time_exit","signal_flip"] = "atr_trail"
-    take_profit_pct: float = 0.03;  stop_loss_pct: float = 0.015
-
-    # Sizing — agent editable; capped by SAE
-    position_size_pct: float = 0.10   # max 0.20 in practice
-    max_concurrent_positions: int = 1
-
-    # Orders — agent editable
-    entry_order_type: Literal["limit","market"] = "limit"
-    limit_offset_bps: int = 5;  min_edge_bps: int = 10
-
-    # Vault — agent may set rate; address is LOCKED
-    vault_take_pct: float = 0.10   # clamped to [0.10, 0.20] by safety layer
-```
-
-**Iteration constraint:** At most **3 `StrategyConfig` parameter changes** per
-proposal. Each change must be justified by referencing recent paper trade outcomes
-from the RL buffer.
-
----
-
-## 4. Autoresearch Feedback Loop
-
-### 4.1 Paper Bot — Continuous Real-Time Reinforcement
-
-The paper bot runs **24/7**, never paused between evaluation windows.
-
-```python
-class PaperBot:
-    """Runs strategy_paper.py against live HL ticks. No real orders.
-    Fills simulated at mid ± half-spread. Outcomes → rl_buffer."""
-    async def run(self):
-        async for tick in hl_ws.subscribe_trades(symbol):
-            signal = self.strategy.generate_signal(self.candle_buffer)
-            if signal != "flat" and self.position is None:
-                self._open_simulated_position(signal, tick.price)
-            elif self.position and self.strategy.should_exit(
-                    self.position, self.candle_buffer):
-                outcome = self._close_simulated_position(tick.price)
-                await rl_buffer.write(outcome)
-                await self._check_promotion_criteria()
-
-    async def _check_promotion_criteria(self):
-        agg = await rl_buffer.get_aggregates(hours=48)
-        if (agg.sharpe >= 1.5 and agg.win_rate >= 0.45
-                and agg.meets_minimum_trades(n=30)
-                and not recovery_state.active):
-            await promote_to_live(self.strategy)
-```
-
-### 4.2 RL Buffer Schema
-
-```python
-@dataclass
-class PaperTradeOutcome:
-    strategy_run_id: str
-    symbol: str
-    signal: str              # long / short
-    entry_price: float
-    exit_price: float
-    pnl_usd: float;  pnl_pct: float
-    hold_bars: int
-    entry_signal_features: dict   # indicator snapshot at entry
-    exit_reason: str         # atr_trail | tp | sl | signal_flip | time_exit
-    funding_paid: float;  fee_paid: float
-    timestamp: int
-
-# SQLite tables in logs/experiments.db:
-# paper_outcomes   — one row per closed paper trade
-# rl_aggregates    — rolling window stats (sharpe, win_rate, avg_edge_bps,
-#                    worst_trade_pct, funding_drag, meets_promotion_criteria)
-# experiments      — one row per autoresearch iteration
-```
-
-### 4.3 Agent Proposal Context
-
-Every iteration receives this context before proposing a new `strategy_paper.py`:
-
-```python
-async def build_proposal_context(db) -> dict:
-    return {
-        "program":              load_trading_program("trading_program.md"),
-        "backtest_history":     db.last_n_experiments(20),
-        "paper_rl_window":      db.get_rl_aggregates(hours=48),
-        "paper_recent_trades":  db.get_paper_outcomes(limit=50),
-        "current_live_config":  load_live_config(),
-        "market_conditions":    await get_market_snapshot(),  # funding, vol regime
-        "recovery_mode":        get_recovery_state(),
-    }
-```
-
-### 4.4 Overnight Iteration Loop
-
-```python
-async def overnight_loop(
-    max_iterations: int = 100,    # 200 in recovery mode
-    backtest_budget_minutes: float = 5.0,
-    score_threshold: float = 1.5, # 2.0 in recovery mode
-):
-    for i in range(max_iterations):
-        ctx      = await build_proposal_context(db)
-        proposal = await agent.propose_strategy(
-            context=ctx,
-            constraints=[
-                "max 3 StrategyConfig param changes from current paper config",
-                "prefer limit orders",
-                "account for current funding rate regime",
-                "justify each change referencing recent paper trade outcomes",
-            ]
-        )
-        if not validate_strategy_module(proposal.code):
-            db.log(proposal, kept=False, rationale="validation_fail"); continue
-        try:
-            score = await asyncio.wait_for(
-                run_backtest(proposal.strategy, candles),
-                timeout=backtest_budget_minutes * 60
-            )
-        except asyncio.TimeoutError:
-            db.log(proposal, kept=False, rationale="timeout"); continue
-        if not should_keep(score, db.get_best_score()):
-            db.log(proposal, score=score, kept=False); continue
-        # ACCEPT — deploy to paper bot
-        db.log(proposal, score=score, kept=True)
-        git_commit_strategy(
-            proposal.code,
-            path="strategy/strategy_paper.py",
-            tag=f"paper/v{i}",
-            message=proposal.rationale,
-        )
-        # ArgoCD picks up → paper bot ConfigMap update
-        # Promotion to live: async, via paper_bot._check_promotion_criteria()
-        await asyncio.sleep(2)
-```
-
-### 4.5 Keep / Discard Logic
-
-```python
-def should_keep(new_score: dict, best_score: dict | None) -> bool:
-    if new_score["max_drawdown"] > 0.08: return False   # hard constraint
-    if new_score["n_trades"] < 10:       return False   # insufficient sample
-    if best_score is None:
-        return new_score["sharpe"] >= score_threshold
-    return (new_score["sharpe"] > best_score["sharpe"] and
-            new_score["max_drawdown"] <= best_score["max_drawdown"] * 1.1)
-```
-
----
-
-## 5. Live Bot — Guarded Real-Fund Execution
-
-### 5.1 Session State
-
-```python
-@dataclass
-class LiveSession:
-    session_id: str
-    session_start_equity: float  # set at start; reset on recovery exit
-    current_equity: float
-    peak_equity: float
-    vault_balance: float         # accumulated in HL sub-account
-    total_profit_realized: float
-    halt_reason: str | None = None
-
-    @property
-    def recovery_threshold(self) -> float:
-        return self.session_start_equity * 0.50   # 50% floor
-
-    @property
-    def in_recovery(self) -> bool:
-        return self.current_equity <= self.recovery_threshold
-```
-
-### 5.2 Vault Deduction on Trade Close
-
-```python
-async def close_position_and_vault(position, exit_price, session):
-    raw_pnl = compute_pnl(position, exit_price)
-    net_pnl = raw_pnl - compute_fees(position, exit_price)
-    if net_pnl > 0:
-        vault_amt = net_pnl * clamp(session.vault_take_pct, 0.10, 0.20)
-        await exchange.transfer_to_vault(vault_amt, VAULT_SUBACCOUNT_ADDRESS)
-        session.vault_balance  += vault_amt
-        session.current_equity += (net_pnl - vault_amt)
-    else:
-        session.current_equity += net_pnl   # losses never touch vault
-    session.peak_equity = max(session.peak_equity, session.current_equity)
-    safety.check_recovery_threshold(session)
-```
-
-### 5.3 Vault Rules
-
-| Rule | Value | Notes |
-|:--|:--|:--|
-| Take rate | 10–20% | Agent may set within range; default 10% |
-| Condition | Profitable trades only | Losses never reduce vault |
-| Address | `VAULT_SUBACCOUNT_ADDRESS` env var | Locked — never agent-writable |
-| Withdrawal | Manual only | No automated withdrawal logic |
-| Re-deployment | Prohibited | Vault balance is one-way |
-| Target | 1× `session_start_equity` | Suggested trigger for human-reviewed withdrawal |
-
----
-
-## 6. Safety Layer
-
-### 6.1 Kill Switches (`agent/safety.py`, locked)
-
-```python
-class SafetyGuard:
-    HARD_MAX_POSITION_USD = 500        # paper; override via env for live
-    DAILY_LOSS_LIMIT_PCT  = 0.02
-    MAX_DRAWDOWN_PCT       = 0.08
-    API_RATE_LIMIT_RPS     = 3         # self-limit; HL public limit is 5 rps
-
-    def check(self, current_equity: float) -> None:
-        """Raises TradingHalt if any limit breached."""
-
-    def validate_order(self, size_usd: float) -> None:
-        """Raises OrderRejected if size > HARD_MAX_POSITION_USD."""
-```
-
-### 6.2 Recovery Mode Trigger
-
-```python
-def check_recovery_threshold(session: LiveSession):
-    if session.in_recovery and not recovery_state.active:
-        await exchange.cancel_all_orders()
-        await exchange.close_all_positions()
-        recovery_state.activate(reason="equity_floor",
-                                floor_equity=session.current_equity)
-        await alert.send("🔴 LIVE TRADING HALTED — recovery mode engaged.")
-```
-
-### 6.3 Recovery Mode Parameters
-
-```python
-@dataclass
-class RecoveryState:
-    active: bool = False
-    recovery_target_sharpe: float = 2.0   # raised from normal 1.5
-    min_paper_hours: float = 72.0         # raised from normal 48 h
-    min_win_rate: float = 0.50            # raised from normal 0.45
-    min_trades: int = 50                  # raised from normal 30
-```
-
-While in recovery:
-1. Live bot: completely halted
-2. Autoresearch loop: 200 iterations/night (vs. normal 100)
-3. Paper bot: continues 24/7
-4. Promotion bar raised to all recovery thresholds above
-5. On exit: `session_start_equity` resets to current equity
-
-### 6.4 Rate Limiting
-
-```python
-# Token bucket in exchange.py — 3 req/s, burst 5
-_rate_sem = asyncio.Semaphore(5)
-async def throttled_request(coro):
-    async with _rate_sem:
-        result = await coro
-        await asyncio.sleep(0.33)   # enforce 3 rps avg
-        return result
-```
-
----
-
-## 7. SAE Engine — Survivability-Aware Execution
-
-The SAE (Survivability-Aware Execution) engine runs as a separate TypeScript
-service (`apps/sae-engine/`). It is the **only path** from approved trade
-decisions to the executor layer.
-
-Functions:
-- Validates trade requests against per-asset leverage and size caps
-- Enforces drawdown-aware regime selection
-- Builds staged execution plans with algo hints: TWAP, VWAP, POV, Iceberg
-- Integrates with RL-based execution timing agents (future)
-- Acts as a non-bypassable firewall — no executor may be called directly
-
-Configuration via `config/strategies/` YAML files and the
-`PUT /sae/policies` Orchestrator API endpoint.
-
----
-
-## 8. Evaluation Harness (`agent/harness.py`, locked)
-
-```python
-BACKTEST_DAYS      = 30       # rolling window
-CANDLE_INTERVAL    = "15m"
-SCORE_THRESHOLD    = 1.5      # Sharpe; raised to 2.0 in recovery
-
-def score(equity: list, trades: list) -> dict:
-    """Returns sharpe, max_drawdown, win_rate, profit_factor, n_trades."""
-    returns      = np.diff(equity) / equity[:-1]
-    sharpe       = (returns.mean() / (returns.std() + 1e-9)) * np.sqrt(365 * 96)
-    # 96 = 15-minute bars per day
-    drawdown     = max_drawdown(equity)
-    win_rate     = sum(1 for t in trades if t["pnl"] > 0) / max(len(trades), 1)
-    profit_factor = (sum positive pnl) / (sum abs negative pnl)
-    return {"sharpe": sharpe, "max_drawdown": drawdown, "win_rate": win_rate,
-            "profit_factor": profit_factor, "n_trades": len(trades)}
-```
-
-**SQLite experiment log schema (`logs/experiments.db`):**
-
-```sql
-CREATE TABLE experiments (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id        TEXT NOT NULL,   -- git short SHA of strategy_paper.py
-    timestamp     INTEGER NOT NULL,
-    config_json   TEXT NOT NULL,   -- StrategyConfig as JSON
-    score_json    TEXT NOT NULL,   -- score() output
-    sharpe        REAL,
-    max_dd        REAL,
-    kept          INTEGER DEFAULT 0,
-    rationale     TEXT
-);
-CREATE TABLE paper_outcomes ( ... as PaperTradeOutcome dataclass ... );
-CREATE TABLE rl_aggregates (
-    run_id TEXT, window_hours REAL, sharpe REAL, win_rate REAL,
-    avg_edge_bps REAL, worst_trade_pct REAL, funding_drag REAL,
-    meets_promotion_criteria INTEGER
-);
-```
-
-JSONL sidecar: `logs/experiments.jsonl` (streaming dashboards).
-
----
-
-## 9. MLflow Experiment Tracking (MultiClaw-MLFlow)
-
-All ML/RL/OPRO jobs in `apps/jobs/` must log to the MultiClaw-MLFlow stack
-(`multiclaw/mlflow/`): MLflow + Postgres + MinIO.
-
-```bash
-# Start stack
-cd multiclaw/mlflow/infra && docker compose up -d
-# Tracking UI: http://localhost:5000
-```
-
-**Required fields per run** (from `EXPERIMENT_STANDARD.md`):
-
-| Field | Description |
-|:--|:--|
-| `model family + version` | LLM or RL model identifier |
-| `dataset identifier/version` | Candle source + date range |
-| `hyperparameters` | All `StrategyConfig` params |
-| `training/eval metrics` | Sharpe, max_dd, win_rate, profit_factor |
-| `artifact URI` | Path to `strategy_paper.py` snapshot |
-| `operator/agent role` | `autoresearch` / `rl-training` / `opro` |
-
-```python
-import mlflow
-with mlflow.start_run(run_name="backtest_ema_cross_v42"):
-    mlflow.log_params({"strategy": "ema_cross", "ema_fast": 9, "ema_slow": 21})
-    mlflow.log_metrics({"sharpe": 1.72, "max_dd": 0.063, "win_rate": 0.51})
-    mlflow.log_artifact("strategy/strategy_paper.py")
-```
-
-`MLFLOW_TRACKING_URI=http://multiclaw-mlflow:5000` (set in `.env.example`).
-
----
-
-## 10. Dashboard and Observability
-
-### 10.1 Service Components
-
-| Service | Role |
-|:--|:--|
-| `dashboard-ui` | React/Next.js UI (charts, tables, regime toggles) |
-| `dashboard-api` | FastAPI backend — aggregates trading and research data |
-| `market-ingestor` | Stores 1-minute candles locally (365-day rolling window) |
-| `status-reporter` | Sends 12-hour operational summary messages |
-
-### 10.2 UI Sections
-
-- **Market Research** — last 365 days of 1-minute candles; strategy entry/exit
-  markers; regime annotations
-- **Paper Trading Performance** — cumulative P/L, rolling Sharpe, max DD, win rate,
-  fees, funding, vault transfers
-- **Live Trading Performance** — same as paper + live equity curve
-- **Vault / Reserved Profit Balance** — accumulated vault balance
-- **Strategy Experiments** — experiment history, accepted/rejected, rationale
-- **Risk and Halt Status** — current mode (backtest / paper / live / recovery)
-
-### 10.3 Data Sources
-
-| Data | Source |
-|:--|:--|
-| Historical candles | HL `candleSnapshot` API → local time-series store |
-| Live candles | HL WebSocket `candle` stream (1-minute incremental) |
-| Account state | HL clearinghouse state + user fills |
-| Experiment data | SQLite `experiments.db` + `experiments.jsonl` |
-
-**Persistent data model:**
-
-```sql
--- Candle store
-CREATE TABLE candles (
-    symbol TEXT, interval TEXT, ts INTEGER,
-    open REAL, high REAL, low REAL, close REAL, volume REAL, source TEXT
-);
--- Performance store
-CREATE TABLE bot_performance (
-    bot_type TEXT,   -- paper | live
-    session_id TEXT, realized_pnl REAL, unrealized_pnl REAL,
-    fees_paid REAL, funding_paid REAL, balance REAL,
-    reserved_profit REAL, max_drawdown REAL, updated_at INTEGER
-);
-```
-
-### 10.4 12-Hour Status Notification
-
-The `status-reporter` sends a compact summary every 12 hours via Slack,
-Telegram, or email fallback. Contents:
-
-- Paper bot cumulative P/L
-- Live bot cumulative P/L
-- Current account balance
-- Reserved profit (vault) balance
-- Current drawdown
-- Current state: `normal | paper-only | live | recovery`
-
-Reporter failures are logged and retried on the next cycle. Repeated failures
-trigger an ops alert but **do not halt trading**. Notifications must never
-include secrets, private keys, or raw wallet material.
-
-### 10.5 Dashboard Auth
-
-Dashboard must be deployed behind SSO or reverse-proxy auth. It must never
-expose secrets, raw API keys, or HL private key material in any API response.
-
----
-
-## 11. Deployment
-
-### 11.1 Environment Variables
-
-```bash
-# HyperLiquid (K8s Secrets only — never in repo)
-HL_PRIVATE_KEY=<private-key>
-VAULT_SUBACCOUNT_ADDRESS=<hl-sub-account-addr>
-TRADE_MODE=paper                    # paper | live
-TRADE_MODE_CONFIRM=yes              # required to enable TRADE_MODE=live
-
-# LLM
-LLM_PROVIDER=<openai|anthropic|…>
-LLM_API_KEY=<provider-key>
-
-# IntelliClaw
-INTELLICLAW_URL=http://intelliclaw:8080
-INTELLICLAW_API_KEY=<bearer-token>  # optional
-INTELLICLAW_CACHE_TTL=60
-
-# MLflow
-MLFLOW_TRACKING_URI=http://multiclaw-mlflow:5000
-```
-
-### 11.2 Kubernetes Pods
-
-| Pod | Manifest | TRADE_MODE |
-|:--|:--|:--|
-| `orchestrator-api` | `infra/k8s/base/orchestrator-api-deploy.yaml` | N/A |
-| `sae-engine` | `infra/k8s/base/sae-engine-deploy.yaml` | N/A |
-| `agents` | `infra/k8s/base/agents-deploy.yaml` | N/A |
-| `executors` | `infra/k8s/base/executors-deploy.yaml` | `paper` (default) |
-| `dashboard` | `infra/k8s/base/dashboard-deploy.yaml` | N/A |
-| `aiml-namespace` | `infra/k8s/aiml/namespace.yaml` | N/A |
-
-Live trading requires a manual K8s Secret patch to set `TRADE_MODE=live` and
-`TRADE_MODE_CONFIRM=yes`.
-
-### 11.3 ArgoCD GitOps Flow
-
-```
-Agent accepts strategy
-  → git commit strategy/strategy_paper.py  (tag: paper/v{N})
-  → push to main branch
-  → ArgoCD detects diff
-  → applies updated ConfigMap
-  → rolling restart of paper-eval pod
-  → paper bot resumes with new strategy
-  → RL buffer accumulates real-time outcomes
-  → promotion to live: async, via paper_bot._check_promotion_criteria()
-```
-
-ArgoCD ApplicationSets default to `TRADE_MODE=paper`. Live requires manual
-patch. Dashboard manifests are also GitOps-managed; strategy commits do not
-directly modify dashboard code.
-
-### 11.4 Docker
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY agent/   ./agent/
-COPY strategy/ ./strategy/
-COPY trading_program.md .
-# strategy_paper.py mounted via ConfigMap or git-sync sidecar
-CMD ["python", "-m", "agent.main"]
-```
-
----
-
-## 12. Repository Layout
-
-```
+```text
 hyperliquid-trading-firm/
-├── SPEC.md                       ← this file (canonical)
-├── SPEC-v1.md                    ← archived
-├── SPEC-v2.md                    ← archived
-├── AGENTS.md                     ← agent editing rules
-├── CLAUDE.md                     ← Claude Code guidance
-├── trading_program.md            ← human-authored goals + addenda
-├── .env.example                  ← env var template
+├─ README.md
+├─ SPEC.md                          ← this file
+├─ DEVELOPMENT_PLAN.md
+├─ LICENSE
+├─ Makefile
+├─ docker-compose.yml
+├─ docker-compose.paper.yml
+├─ docker-compose.live.yml
+├─ .env.example
 │
-├── apps/
-│   ├── orchestrator-api/         # Node/TS REST+WS API
-│   ├── sae-engine/               # TypeScript SAE policy engine
-│   ├── agents/
-│   │   └── src/
-│   │       ├── agents/           # 12 analyst/trader/risk agent stubs
-│   │       ├── atlas/            # meta_prompts.py, prompt_optimizer.py
-│   │       ├── config/           # model_routing.yaml
-│   │       ├── memory/           # global_state_store.py, vector_store.py
-│   │       ├── strategies/       # base_strategy.py + 4 plugin stubs
-│   │       ├── tools/            # intelliclaw_client.py (implemented)
-│   │       ├── types/            # intel.py (IntelSnapshot schema, implemented)
-│   │       └── main.py
-│   ├── executors/                # HL, Hummingbot, DEX adapters
-│   ├── dashboard/                # React/Next.js UI
-│   └── jobs/                     # Backtests, RL training, OPRO, DCA/vault
+├─ proto/
+│  ├─ common.proto                  # Meta, Direction, TradeMode, shared enums
+│  ├─ decisioning.proto             # ResearchPacket, DebateOutcome, TradeIntent
+│  ├─ risk.proto                    # RiskVote, RiskReview, ExecutionApprovalRequest, ExecutionApproval
+│  ├─ execution.proto               # ExecutionRequest, ExecutionDecision, FillReport
+│  └─ controlplane.proto            # OpenClaw API types, HITLRuleSet, GovernanceEvent
 │
-├── strategy/
-│   ├── strategy_base.py          ← locked ABC
-│   ├── strategy_paper.py         ← AGENT-EDITABLE
-│   ├── strategy_live.py          ← promotion logic only
-│   └── strategy_vault.py         ← vault rate config
+├─ apps/
+│  ├─ orchestrator-api/             # TypeScript/Node — cycle coordinator, public API, event bus
+│  ├─ agents/                       # Python — TradingAgents-based analyst/debate/trader/risk/fund-mgr
+│  │  ├─ tradingagents/             # git submodule or vendored copy of TauricResearch/TradingAgents
+│  │  ├─ adapters/                  # HL-specific adapters wrapping TradingAgents interfaces
+│  │  ├─ analysts/
+│  │  │  ├─ fundamental.py
+│  │  │  ├─ sentiment.py
+│  │  │  ├─ news.py
+│  │  │  ├─ technical.py
+│  │  │  └─ onchain.py
+│  │  ├─ researchers/
+│  │  │  ├─ bull.py
+│  │  │  └─ bear.py
+│  │  ├─ debate/
+│  │  │  └─ facilitator.py
+│  │  ├─ trader/
+│  │  │  └─ trader_agent.py
+│  │  ├─ risk/
+│  │  │  ├─ aggressive.py
+│  │  │  ├─ neutral.py
+│  │  │  └─ conservative.py
+│  │  └─ fund_manager/
+│  │     └─ fund_manager_agent.py
+│  ├─ sae-engine/                   # TypeScript/Node — policy engine, hard gates, staged requests
+│  ├─ executors/                    # Python — HyperLiquid paper + live venue adapters
+│  │  ├─ hyperliquid_paper.py
+│  │  ├─ hyperliquid_live.py
+│  │  └─ fill_reconciler.py
+│  ├─ jobs/                         # Python — backtests, ablations, prompt scoring, eval harness
+│  │  ├─ backtest_runner.py
+│  │  ├─ ablation_runner.py
+│  │  └─ prompt_policy_scorer.py
+│  └─ dashboard/                    # Next.js — decision traces, governance, experiments UI
 │
-├── agent/
-│   ├── main.py                   ← orchestrator (locked)
-│   ├── exchange.py               ← HL SDK, auth, rate limit (locked)
-│   ├── safety.py                 ← kill switches (locked)
-│   ├── harness.py                ← backtest + scoring (locked)
-│   ├── iteration_loop.py         ← autoresearch engine (locked)
-│   ├── paper_bot.py              ← 24/7 paper trader (locked)
-│   ├── live_bot.py               ← real-fund execution (locked)
-│   ├── rl_buffer.py              ← reinforcement data store (locked)
-│   └── recovery.py               ← recovery state machine (locked)
+├─ packages/
+│  ├─ schemas/                      # Generated JSON schemas + TS/Python shared models (from proto)
+│  ├─ prompt-policies/              # Versioned prompt templates with metadata
+│  │  ├─ analyst/
+│  │  ├─ trader/
+│  │  ├─ risk-aggressive/
+│  │  ├─ risk-neutral/
+│  │  ├─ risk-conservative/
+│  │  └─ fund-manager/
+│  └─ strategy-sdk/                 # Plugin API for strategy modules
 │
-├── logs/
-│   ├── experiments.db            ← SQLite (gitignored)
-│   └── experiments.jsonl         ← JSONL sidecar (gitignored)
+├─ config/
+│  ├─ env/                          # Per-environment .env overlays
+│  ├─ policies/                     # SAE policy YAML files
+│  ├─ strategies/                   # Strategy configuration JSON
+│  ├─ hitl-rulesets/                # Clawvisor HITL JSON rulesets
+│  └─ model-routing/                # LLM model routing tables
 │
-├── config/
-│   ├── db.yaml, logging.yaml, queues.yaml
-│   ├── env.example
-│   └── strategies/               ← per-asset SAE policy YAML
+├─ strategy/
+│  ├─ strategy_paper.py             # Paper trading strategy plugin
+│  ├─ strategy_live.py              # Live trading strategy plugin
+│  └─ trading_program.md            # Human-readable strategy intent document
 │
-├── infra/
-│   ├── k8s/
-│   │   ├── base/                 ← service deployments
-│   │   └── aiml/                 ← AI/ML namespace
-│   └── terraform/
+├─ infra/
+│  ├─ k8s/                          # Kubernetes manifests
+│  ├─ argocd/                       # GitOps application definitions
+│  ├─ terraform/                    # Cloud infrastructure
+│  └─ observability/                # Prometheus, Grafana, Loki configs
 │
-├── multiclaw/
-│   ├── mlflow/                   ← MLflow + Postgres + MinIO stack
-│   │   ├── infra/docker-compose.yml
-│   │   └── docs/  (architecture, runbook, EXPERIMENT_STANDARD, ROADMAP)
-│   └── tools/                    ← agentic reasoning docs, PDF utilities
+├─ docs/
+│  ├─ architecture.md
+│  ├─ api-contracts.md
+│  ├─ protobuf.md
+│  ├─ tradingagents-integration.md  # How TauricResearch/TradingAgents is adopted
+│  └─ runbooks/
 │
-├── prompts/                      ← LLM system + user prompt templates
-├── tests/                        ← unit + integration tests
-├── docker-compose.yml
-└── Makefile
+└─ tests/
+   ├─ contract/                     # Proto/schema contract tests
+   ├─ integration/                  # Service-to-service integration tests
+   ├─ simulation/                   # Paper trade simulation tests
+   └─ chaos/                        # Fault injection and recovery tests
 ```
 
----
-
-## 13. Success Metrics and Risk Parameters
-
-| Metric | Target | Hard Limit |
-|:--|:--|:--|
-| Annualised Sharpe ratio | ≥ 1.5 (normal) · ≥ 2.0 (recovery) | — |
-| Max drawdown | < 8% over backtest window | 8% → strategy rejected |
-| Win rate | ≥ 45% (normal) · ≥ 50% (recovery) | — |
-| Profit factor | ≥ 1.3 | — |
-| Min trade edge | > 10 bps after fees | < 10 bps → skip trade |
-| Paper gate window | 48 h (normal) · 72 h (recovery) | — |
-| Overnight iterations | 100 (normal) · 200 (recovery) | 5 min budget/iter |
-| Live halt trigger | Equity ≤ 50% of session start | Immediate halt + close all |
-| Daily loss limit | 2% of account equity | Trading halt |
-| Max position (paper) | $500 notional | Hard cap in safety.py |
-| Max position (live) | $2,000 notional (phase 1) | Hard cap via env override |
-| Vault take rate | 10% default · max 20% | Agent-configurable within range |
-| Funding rate threshold | > 0.05%/8 h adverse | Skip entry |
 
 ---
 
-## 14. Markets
+## 4. TradingAgents Framework Integration
 
-- **Primary:** BTC-PERP (highest liquidity, tightest spreads)
-- **Secondary:** ETH-PERP (permitted after 50 successful BTC iterations)
-- **Prohibited:** Any market with < $5M 24 h volume or funding rate > 0.1%/8 h
+### 4.1 Adoption Strategy
+
+The [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) framework is
+incorporated as a **vendored dependency** (or git submodule) under `apps/agents/tradingagents/`.
+Its internal agent graph, analyst roles, debate workflow, and backbone LLM routing are used
+directly, **wrapped by HL-specific adapters** that:
+
+1. Replace TradingAgents' generic data feeds with HyperLiquid + IntelliClaw + onchain sources
+2. Enforce typed output schemas (JSON matching the proto contracts) instead of free-form text
+3. Route outputs into the Orchestrator API's typed state store rather than a local in-memory graph
+4. Add the `onchain` analyst role (not in the base framework) for HL-specific DeFi signals
+
+### 4.2 What Is Used Unchanged
+
+- Analyst agent class hierarchy (fundamental, sentiment, news, technical)
+- Bull/bear researcher pattern and debate facilitator
+- Trader agent synthesis pattern
+- Backbone LLM routing concept (fast models for retrieval, strong models for synthesis/debate)
+- Risk management team structure (mapped to aggressive/neutral/conservative profiles)
+
+
+### 4.3 What Is Extended or Replaced
+
+| TradingAgents Component | This Repo Extension |
+| :-- | :-- |
+| In-process agent graph | Distributed services via Orchestrator API event bus |
+| Free-form string outputs | Typed protobuf/JSON artifact outputs |
+| Single-process execution | SAE non-bypassable approval layer |
+| Generic data sources | HL-specific: HyperLiquid REST/WS, IntelliClaw, Pyth, onchain |
+| No operator governance | OpenClaw adapter + Clawvisor HITL rulesets |
+| No audit trail | Immutable DecisionTrace per cycle in Postgres |
+| No post-trade reflection | Jobs service: offline evaluation, prompt-policy scoring |
+
+### 4.4 Model Routing
+
+Following the backbone-model routing concept from the paper:
+
+
+| Stage | Model Class | Rationale |
+| :-- | :-- | :-- |
+| Data normalization, entity extraction | Fast/cheap (GPT-4o-mini, Haiku) | High volume, low reasoning requirement |
+| Analyst synthesis | Mid-tier (GPT-4o, Sonnet) | Domain reasoning on structured inputs |
+| Bull/bear debate rounds | Strong reasoning (o3, Opus) | Adversarial argument quality matters |
+| Trader synthesis | Strong reasoning | Final intent formulation |
+| Risk committee | Mid-tier × 3 profiles | Parallel profile evaluation |
+| Fund manager | Strong reasoning | Portfolio-level constraint enforcement |
+| SAE | Deterministic rule engine | No LLM — hard policy only |
+
 
 ---
 
-## 15. OpenClaw Integration Surface
+## 5. Runtime Architecture
 
-| Endpoint | Description |
-|:--|:--|
-| `POST /cycles/trigger` | Kick off a full analyst → debate → trader → risk → SAE cycle |
-| `PUT /sae/policies` | Adjust SAE leverage, size, drawdown policy parameters |
-| `PUT /config/strategy` | Update strategy config for paper bot |
-| `GET /traces/:id` | Full decision trace for audit / auto-research loops |
-| `GET /metrics` | Live performance metrics |
+### 5.1 Service Map
 
-Do not add endpoints that expose private keys, vault addresses, or allow
-direct order placement bypassing the SAE engine.
+```
+┌─────────────────────────────────────────────────────────┐
+│                    OpenClaw Control Plane                │
+│  (cycle trigger, HITL approval, policy governance,       │
+│   service halt/resume, strategy lifecycle)               │
+└────────────────────────┬────────────────────────────────┘
+                         │ REST + WebSocket
+┌────────────────────────▼────────────────────────────────┐
+│                   Orchestrator API                       │
+│  (cycle coordinator, shared typed state store,           │
+│   event bus, HITL gate query, audit log writer)          │
+└──────┬──────────┬──────────────┬────────────────────────┘
+       │          │              │
+┌──────▼──────┐  ┌▼────────────┐ ┌▼────────────────────┐
+│  Agents Svc │  │  SAE Engine │ │    Executors Svc     │
+│  (TradingAg │  │  (policy,   │ │  (HL paper/live,     │
+│  + adapters)│  │  hard gates,│ │   fill reconciler)   │
+└──────┬──────┘  │  staged     │ └──────────┬───────────┘
+       │         │  requests)  │            │
+       │         └──────┬──────┘            │
+       │                │                   │
+       └────────────────▼───────────────────▼
+                  Postgres / MLflow / Object Store
+                  (DecisionTraces, fills, policies,
+                   prompt history, experiments)
+                         │
+               ┌─────────▼──────────┐
+               │   Dashboard / UI   │
+               │  (traces, govern., │
+               │   experiments)     │
+               └────────────────────┘
+```
+
+
+### 5.2 Decision Cycle Flow
+
+```
+1. INGEST        Market snapshot (HL OHLCV + OB + funding)
+                 + IntelliClaw intel feed
+                 + Sentiment/news ingestion
+                 + Onchain signals
+
+2. ANALYZE       5 specialist analysts → ResearchPacket
+                 [fundamental, sentiment, news, technical, onchain]
+
+3. DEBATE        Bull researcher thesis + Bear researcher thesis
+                 → Facilitator debate (N rounds)
+                 → DebateOutcome [consensus_strength, open_risks]
+
+4. TRADE         Trader agent synthesizes ResearchPacket + DebateOutcome
+                 → TradeIntent [action, confidence, notional_pct, rationale]
+
+5. RISK          3 risk profiles evaluate TradeIntent in parallel
+                 → RiskVote × 3 → RiskReview [committee_result, net_size_cap]
+
+6. FUND MGR      Fund manager applies portfolio constraints
+                 → ExecutionApprovalRequest → ExecutionApproval
+
+7. HITL GATE     Clawvisor HITL ruleset evaluated
+                 → If required: pause for human approval via OpenClaw
+
+8. SAE           Deterministic policy checks (position limits, drawdown,
+                 correlation, liquidity, stale data, leverage caps)
+                 → ExecutionDecision [allowed, checks_passed/failed, staged_requests]
+
+9. EXECUTE       Executor submits staged requests to HyperLiquid
+                 → FillReport(s)
+
+10. RECONCILE    Fill reconciler updates portfolio state
+
+11. PERSIST      DecisionTrace written to Postgres with all artifacts
+
+12. REFLECT      Post-trade jobs: scoring, ablation contribution,
+                 prompt-policy evaluation (off hot path)
+```
+
+
+### 5.3 No-Trade Conditions
+
+The system **must** emit `action: FLAT` and skip execution when any of the following are true:
+
+- `debate_outcome.consensus_strength < config.min_consensus_threshold`
+- `risk_review.committee_result == "reject"` and `config.require_unanimous_for_live == true`
+- `sae_decision.allowed == false`
+- `execution_approval.approved == false`
+- Any analyst report has `data_gap: true`
+- Any required condition in `trade_intent.required_conditions` is not satisfied
+- HITL gate is open (awaiting human approval) and timeout has not expired
 
 ---
 
-## 16. Design Decision Log
+## 6. Data Contracts
 
-| Decision | Rationale |
-|:--|:--|
-| Multi-service firm (v2+) vs. single process (v1) | Separation of concerns; orchestrator, agents, SAE, and executors scale and fail independently |
-| IntelliClaw as external intel layer (v3) | Analysts get live, multi-source sentiment/on-chain data without managing data pipelines in-repo |
-| Paper bot runs 24/7, not just eval windows | Real-time market regime data is more valuable than offline backtest; fills autoresearch context with live signal |
-| 48 h paper gate before live promotion | Prevents backtest-overfit strategies from touching real funds; spans multiple sessions and funding cycles |
-| Dual-file strategy (paper + live) | Agent cannot bypass the paper gate; only promotion logic writes `strategy_live.py` |
-| Vault deducted from profits only | Losses are never taxed; vault grows monotonically as a permanent safety reserve |
-| 50% equity floor for live halt | At 50% loss the strategy is demonstrably failing; continuing risks total loss |
-| Raised recovery bar (Sharpe 2.0, 72 h) | Recovery must produce a better strategy, not just a marginally passing one |
-| `session_start_equity` resets on recovery exit | Prevents perpetual "almost 50% down" trap after recovery |
-| Vault address in K8s Secret only | Eliminates any code path where a compromised agent could reroute vault funds |
-| MLflow via MultiClaw-MLFlow (v3) | Reproducible experiment governance; Postgres + MinIO for durability across pods |
-| Max 3 StrategyConfig param changes/iter | Prevents overfitting by isolating the effect of each change |
-| Sharpe over raw PnL as primary metric | Sharpe penalises volatility; more stable signal for unattended overnight runs |
-| SQLite for experiment log | Zero infra overhead; queryable; portable across pods |
-| ConfigMap / git-sync for strategy_paper.py | ArgoCD can diff/rollback any strategy version without rebuilding the image |
+### 6.1 Core Types (common.proto)
+
+```protobuf
+syntax = "proto3";
+package tradingfirm.common;
+
+message Meta {
+  string cycle_id              = 1;
+  string correlation_id        = 2;
+  string strategy_version      = 3;
+  string prompt_policy_version = 4;
+  string market_snapshot_id    = 5;
+  int64  created_at_ms         = 6;
+  string operator_identity     = 7;
+}
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  LONG  = 1;
+  SHORT = 2;
+  FLAT  = 3;
+}
+
+enum TradeMode {
+  TRADE_MODE_UNSPECIFIED = 0;
+  BACKTEST  = 1;
+  PAPER     = 2;
+  LIVE      = 3;
+  RECOVERY  = 4;
+}
+
+enum MarketRegime {
+  REGIME_UNSPECIFIED = 0;
+  TREND_UP    = 1;
+  TREND_DOWN  = 2;
+  RANGE       = 3;
+  EVENT_RISK  = 4;
+  HIGH_VOL    = 5;
+}
+```
+
+
+### 6.2 Decisioning (decisioning.proto)
+
+```protobuf
+message AnalystScore {
+  string            analyst       = 1;
+  double            score         = 2;
+  double            confidence    = 3;
+  repeated string   key_points    = 4;
+  repeated string   evidence_refs = 5;
+  bool              data_gap      = 6;
+}
+
+message ResearchPacket {
+  tradingfirm.common.Meta         meta              = 1;
+  string                          asset             = 2;
+  tradingfirm.common.MarketRegime regime            = 3;
+  repeated AnalystScore           analyst_scores    = 4;
+  bool                            has_macro_event   = 5;
+  bool                            has_data_gap      = 6;
+  bool                            has_liq_warning   = 7;
+  double                          volatility_zscore = 8;
+  double                          funding_rate      = 9;
+}
+
+message DebateOutcome {
+  tradingfirm.common.Meta meta               = 1;
+  double                  bull_score         = 2;
+  double                  bear_score         = 3;
+  string                  bull_thesis        = 4;
+  string                  bear_thesis        = 5;
+  double                  consensus_strength = 6;
+  repeated string         open_risks         = 7;
+  string                  facilitator_summary = 8;
+  uint32                  debate_rounds      = 9;
+}
+
+message TradeIntent {
+  tradingfirm.common.Meta  meta                  = 1;
+  string                   asset                 = 2;
+  tradingfirm.common.Direction action            = 3;
+  double                   thesis_strength       = 4;
+  double                   confidence            = 5;
+  double                   target_notional_pct   = 6;
+  double                   preferred_leverage    = 7;
+  uint32                   max_slippage_bps      = 8;
+  string                   time_horizon          = 9;
+  repeated string          required_conditions   = 10;
+  string                   rationale             = 11;
+}
+```
+
+
+### 6.3 Risk (risk.proto)
+
+```protobuf
+message RiskVote {
+  tradingfirm.common.Meta meta         = 1;
+  string                  profile      = 2;
+  bool                    approve      = 3;
+  double                  size_cap_pct = 4;
+  repeated string         objections   = 5;
+}
+
+message RiskReview {
+  tradingfirm.common.Meta meta              = 1;
+  repeated RiskVote       votes             = 2;
+  string                  committee_result  = 3;
+  double                  net_size_cap_pct  = 4;
+  repeated string         unresolved_risks  = 5;
+}
+
+message ExecutionApprovalRequest {
+  tradingfirm.common.Meta              meta                   = 1;
+  tradingfirm.decisioning.TradeIntent  trade_intent           = 2;
+  RiskReview                           risk_review            = 3;
+  double                               portfolio_exposure_pct = 4;
+  double                               daily_pnl_pct          = 5;
+  double                               drawdown_pct           = 6;
+  double                               correlation_to_book    = 7;
+}
+
+message ExecutionApproval {
+  tradingfirm.common.Meta meta               = 1;
+  bool                    approved           = 2;
+  string                  rejection_reason   = 3;
+  double                  final_notional_pct = 4;
+  double                  final_leverage     = 5;
+  string                  execution_algo     = 6;
+}
+```
+
+
+### 6.4 Execution (execution.proto)
+
+```protobuf
+message ExecutionRequest {
+  tradingfirm.common.Meta      meta             = 1;
+  string                       asset            = 2;
+  tradingfirm.common.Direction action           = 3;
+  double                       notional_usd     = 4;
+  double                       leverage         = 5;
+  string                       algo             = 6;
+  uint32                       max_slippage_bps = 7;
+  bool                         reduce_only      = 8;
+  string                       tif              = 9;
+}
+
+message ExecutionDecision {
+  tradingfirm.common.Meta      meta              = 1;
+  bool                         allowed           = 2;
+  string                       policy_version    = 3;
+  repeated string              checks_passed     = 4;
+  repeated string              checks_failed     = 5;
+  repeated ExecutionRequest    staged_requests   = 6;
+  string                       rejection_reason  = 7;
+}
+
+message FillReport {
+  tradingfirm.common.Meta meta             = 1;
+  string                  venue_order_id   = 2;
+  string                  asset            = 3;
+  double                  filled_qty       = 4;
+  double                  avg_price        = 5;
+  double                  fees_usd         = 6;
+  double                  slippage_bps     = 7;
+  string                  status           = 8;
+}
+```
+
+
+### 6.5 DecisionTrace (JSON — stored in Postgres)
+
+```json
+{
+  "cycle_id": "cyc_01JQ...",
+  "asset": "BTC-PERP",
+  "mode": "paper",
+  "market_snapshot_id": "ms_01JQ...",
+  "strategy_version": "paper/v17",
+  "prompt_policy_versions": {
+    "fundamental":        "fundamental/v4",
+    "sentiment":          "sentiment/v3",
+    "news":               "news/v5",
+    "technical":          "technical/v6",
+    "onchain":            "onchain/v2",
+    "bull":               "bull/v3",
+    "bear":               "bear/v3",
+    "trader":             "trader/v9",
+    "risk_aggressive":    "risk-aggressive/v2",
+    "risk_neutral":       "risk-neutral/v3",
+    "risk_conservative":  "risk-conservative/v2",
+    "fund_manager":       "fund-manager/v4"
+  },
+  "research_packet":           {},
+  "debate_outcome":            {},
+  "trade_intent":              {},
+  "risk_review":               {},
+  "execution_approval_req":    {},
+  "execution_approval":        {},
+  "hitl_gate": {
+    "required": false,
+    "approved_by": null,
+    "approved_at_ms": null
+  },
+  "sae_decision":              {},
+  "fill_reports":              [],
+  "final_state": {
+    "result": "filled|no_fill|rejected_sae|rejected_risk|rejected_hitl|flat",
+    "halt_flags": [],
+    "total_latency_ms": 2140,
+    "agent_latencies_ms": {}
+  }
+}
+```
+
+
+### 6.6 Clawvisor HITL Ruleset (JSON)
+
+```json
+{
+  "ruleset_id": "hitl_default_v1",
+  "enabled": true,
+  "rules": [
+    {
+      "name": "live_always_requires_human",
+      "when": { "mode": ["live"] },
+      "require_approval": true,
+      "timeout_seconds": 300,
+      "on_timeout": "reject"
+    },
+    {
+      "name": "large_notional",
+      "when": { "notional_pct_gte": 0.05 },
+      "require_approval": true,
+      "timeout_seconds": 120,
+      "on_timeout": "reject"
+    },
+    {
+      "name": "risk_committee_not_unanimous",
+      "when": { "committee_result": ["approve_with_modification", "reject"] },
+      "require_approval": true,
+      "timeout_seconds": 180,
+      "on_timeout": "reject"
+    },
+    {
+      "name": "strategy_promotion",
+      "when": { "event_type": ["strategy_version_change", "prompt_policy_promotion"] },
+      "require_approval": true,
+      "timeout_seconds": 3600,
+      "on_timeout": "reject"
+    }
+  ]
+}
+```
+
+
+---
+
+## 7. Orchestrator API
+
+### 7.1 Endpoints
+
+| Method | Path | Description |
+| :-- | :-- | :-- |
+| `POST` | `/cycles/trigger` | Trigger a new decision cycle |
+| `GET` | `/cycles/:id` | Get cycle status |
+| `GET` | `/traces/:id` | Get full DecisionTrace |
+| `GET` | `/traces` | List traces (paginated, filterable) |
+| `POST` | `/control/halt` | Emergency halt all cycles |
+| `POST` | `/control/resume` | Resume after halt |
+| `POST` | `/governance/hitl-rules` | Update HITL ruleset |
+| `POST` | `/governance/hitl-rules/:rule/approve` | Human approval for open HITL gate |
+| `POST` | `/governance/prompt-policies/promote` | Promote prompt-policy version |
+| `POST` | `/governance/strategies/promote` | Promote strategy version |
+| `POST` | `/sae/policies/reload` | Hot-reload SAE policy |
+| `GET` | `/status` | System health |
+| `GET` | `/metrics` | Prometheus scrape endpoint |
+
+### 7.2 Cycle Trigger Request
+
+```json
+{
+  "asset": "BTC-PERP",
+  "mode": "paper",
+  "requested_by": "openclaw",
+  "reason": "scheduled_cycle",
+  "constraints": {
+    "max_notional_pct": 0.10,
+    "require_hitl": false,
+    "require_risk_unanimity": false,
+    "force_flat": false
+  }
+}
+```
+
+
+---
+
+## 8. Safety Architecture
+
+### 8.1 Invariants
+
+These invariants **must** hold in all modes, verified by architecture tests:
+
+1. No `ExecutionRequest` reaches an Executor without a passing `ExecutionDecision` from SAE
+2. No `ExecutionDecision` is issued without an `ExecutionApproval` from Fund Manager
+3. No live-mode cycle completes without HITL approval when the active ruleset requires it
+4. All DecisionTrace artifacts are written atomically before fill reconciliation
+5. SAE has no LLM dependency; it is a deterministic rule engine only
+6. Strategy version changes require Clawvisor HITL approval before taking effect in live mode
+7. Prompt-policy versions are immutable once promoted; only new versions may be created
+
+### 8.2 SAE Policy Checks
+
+SAE evaluates the following checks in order; first failure stops evaluation and rejects:
+
+
+| Check | Threshold (default) | Configurable |
+| :-- | :-- | :-- |
+| `position_limit` | Max notional per asset ≤ 15% of portfolio | Yes |
+| `portfolio_drawdown` | Portfolio drawdown ≤ 8% | Yes |
+| `daily_loss_limit` | Daily PnL ≤ -3% | Yes |
+| `leverage_cap` | Leverage ≤ 3× paper, ≤ 2× live | Yes |
+| `liquidity_gate` | 24h volume ≥ 10× trade notional | Yes |
+| `correlation_gate` | New position correlation to book ≤ 0.7 | Yes |
+| `stale_data` | Market snapshot age ≤ 60s | Yes |
+| `funding_rate` | Funding rate ≤ 0.1% per 8h | Yes |
+| `event_blackout` | No active macro event flag | Yes |
+
+
+---
+
+## 9. Storage Schema
+
+### 9.1 Key Postgres Tables
+
+| Table | Primary Key | Purpose |
+| :-- | :-- | :-- |
+| `decision_traces` | `cycle_id` | Full DecisionTrace JSON blobs |
+| `analyst_reports` | `(cycle_id, analyst)` | Individual analyst outputs |
+| `risk_reviews` | `cycle_id` | Committee results |
+| `execution_decisions` | `cycle_id` | SAE decisions |
+| `fills` | `venue_order_id` | Fill records |
+| `prompt_policies` | `(role, version)` | Versioned prompt templates |
+| `prompt_history` | `(cycle_id, role)` | Rendered prompts per cycle |
+| `strategy_versions` | `(name, version)` | Strategy plugin registry |
+| `hitl_rulesets` | `ruleset_id` | HITL rule definitions |
+| `human_approvals` | `(cycle_id, rule_name)` | Human approval records |
+| `recovery_state` | `service_name` | Last known safe state per service |
+| `ablation_results` | `(run_id, variant)` | Ablation experiment outputs |
+
+
+---
+
+## 10. Observability
+
+### 10.1 Metric Categories
+
+**Trading metrics:** cumulative return, annualized return, Sharpe ratio, max drawdown,
+hit rate, turnover, exposure concentration, avg holding period, slippage bps
+
+**Process metrics:** cycle latency P50/P95/P99, analyst latency per role, debate duration,
+debate rounds per cycle, veto frequency, no-trade frequency, HITL approval time
+
+**Safety metrics:** SAE rejection frequency per check, stale-data incident count,
+risk committee disagreement rate, human override count, recovery entry count,
+prompt-policy rollback count
+
+### 10.2 Alerting Thresholds
+
+| Alert | Condition |
+| :-- | :-- |
+| `trading.drawdown.critical` | Portfolio drawdown > 6% |
+| `safety.stale_data` | Market snapshot age > 90s in live mode |
+| `safety.sae_rejection_spike` | SAE rejection rate > 30% over 10 cycles |
+| `process.cycle_latency` | Cycle P95 latency > 8s |
+| `infra.agent_service_down` | Agent service health check fails > 30s |
+
+
+---
+
+## 11. Limitations and Scope Constraints
+
+The following items are **explicitly out of scope** for this specification:
+
+- Cross-exchange arbitrage or multi-venue execution
+- Equity, options, or non-perpetual instruments
+- Fully autonomous live trading without HITL approval (always required in v1 live)
+- Self-modifying strategy logic (all strategy changes require explicit promotion)
+- Any AI-generated reasoning placed directly in an execution path without SAE review
+
+The TradingAgents paper's reported performance (26–27% cumulative return, Sharpe 6–8) was
+measured over a narrow 2024 simulation window on selected US equities. These results should be
+treated as design validation evidence, **not as live trading performance targets**. All
+performance claims for this system require independent walk-forward validation in paper mode
+before any live deployment decision.
+
+---
+
+## 12. References
+
+- TradingAgents paper: https://arxiv.org/pdf/2412.20138
+- TauricResearch/TradingAgents: https://github.com/TauricResearch/TradingAgents
+- HyperLiquid API: https://hyperliquid.gitbook.io/hyperliquid-docs
+- This repo: https://github.com/enuno/hyperliquid-trading-firm
