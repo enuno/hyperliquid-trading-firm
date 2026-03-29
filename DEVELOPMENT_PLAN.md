@@ -1,730 +1,561 @@
-# DEVELOPMENT_PLAN.md — HyperLiquid Autonomous Trading Firm
+# hyperliquid-trading-firm — Development Plan
 
-**Plan Version:** 1.0.0  
-**Tracks:** SPEC.md v0.3.0  
-**Updated:** 2026-03-26  
-**Deployment target:** Kubernetes / ServerDomes edge cluster via ArgoCD GitOps  
-**Status:** Active development
+> **Version:** 2.1.0
+> **Last updated:** 2026-03-29
+> **Target:** Paper trading continuous operation with full audit trail
+> **Repo:** https://github.com/enuno/hyperliquid-trading-firm
 
 ---
 
 ## Overview
 
-This plan translates SPEC.md v0.3.0 into an ordered, dependency-respecting build sequence.
-Work is organised into six phases that each produce a runnable, testable system boundary:
+This plan covers seven sequential phases. Each phase has an explicit exit gate — a condition that
+**must** be met before work on the next phase begins. No phase is skipped.
 
-| Phase | Name | Outcome |
+The system adopts [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents)
+as the agent framework foundation, extending it with HyperLiquid-specific adapters, the SAE hard
+safety layer, Clawvisor HITL governance, treasury management, autonomous optimizer agent, and
+full DecisionTrace audit infrastructure.
+
+All architecture decisions are governed by `SPEC.md`. When this plan conflicts with `SPEC.md`,
+`SPEC.md` wins and this document is updated.
+
+---
+
+## Phase 0 — Scaffolding and Contract-First Foundation
+
+**Goal:** Every service can boot, the contract layer compiles and passes, and the local dev
+environment is fully reproducible.
+
+### Tasks
+
+- [ ] **P0-01** Create repo directory structure per SPEC.md §3
+- [ ] **P0-02** Write all `.proto` files per SPEC.md §6 (`common`, `decisioning`, `risk`,
+      `execution`, `controlplane`)
+- [ ] **P0-03** Set up protobuf codegen pipeline (buf.build or protoc) generating Python +
+      TypeScript clients into `packages/schemas/`
+- [ ] **P0-04** Write JSON Schema equivalents for all handoff artifacts (used for REST and storage)
+- [ ] **P0-05** Initialize `docker-compose.yml` with: Postgres, Redis, MLflow, all service
+      containers (stub health endpoints only)
+- [ ] **P0-06** Write Makefile targets: `make boot`, `make codegen`, `make test-contracts`,
+      `make lint`, `make migrate`
+- [ ] **P0-07** Write `.env.example` with all required variables documented and typed
+- [ ] **P0-08** Set up Postgres schema migrations (Alembic for Python services, raw SQL with
+      version tracking for TS services) for all tables in SPEC.md §10
+- [ ] **P0-09** Add contract test suite in `tests/contract/` — verifies proto-generated models
+      serialize/deserialize correctly in both TS and Python
+- [ ] **P0-10** Add `tradingagents` as git submodule under `apps/agents/tradingagents/`
+      pointing to `TauricResearch/TradingAgents`
+- [ ] **P0-11** Stub `apps/orchestrator-api/` with health endpoint and empty cycle trigger handler
+- [ ] **P0-12** Stub `apps/sae-engine/` with health endpoint and pass-through (no policy yet)
+- [ ] **P0-13** Stub `apps/executors/` with health endpoint and paper stub (log only, no fills)
+- [ ] **P0-14** Stub `apps/treasury/` with health endpoint and no-op conversion handler
+- [ ] **P0-15** Write `docs/tradingagents-integration.md` per SPEC.md §4
+- [ ] **P0-16** Write `docs/treasury.md` documenting conversion strategy and thresholds
+
+### Exit Gate
+
+✅ `make boot` starts all containers without errors
+✅ `make codegen` regenerates schemas from proto without errors
+✅ `make test-contracts` passes (TS + Python round-trip serialization)
+✅ `make migrate` runs without errors on a clean Postgres instance
+✅ `POST /cycles/trigger` returns 202 with a `cycle_id` (no agent work yet)
+✅ All table definitions present in migration files including `treasury_events` and
+   `optimizer_runs`
+
+---
+
+## Phase 1 — Data Ingestion and Analyst Layer
+
+**Goal:** Five specialist analyst agents consume real data sources and produce typed
+`ResearchPacket` artifacts. No trading decisions yet.
+
+### Tasks
+
+#### Data Sources
+- [ ] **P1-01** Implement HyperLiquid REST + WebSocket adapter: OHLCV, order book snapshot,
+      funding rate, open interest — use official HL Python SDK where available
+- [ ] **P1-02** Implement IntelliClaw intel feed adapter (news, alpha signals) — document
+      field mapping in `docs/api-contracts.md`
+- [ ] **P1-03** Implement sentiment adapter: social sentiment score with confidence and
+      bot-filter weight applied (per hypersignal reliability requirements documented in
+      `docs/architecture.md`)
+- [ ] **P1-04** Implement onchain adapter: HL vault flows, liquidation map, whale wallet
+      tracker — this is the new `OnchainAnalyst` not present in base TradingAgents
+- [ ] **P1-05** Implement `MarketSnapshot` builder: assembles all sources into a timestamped,
+      versioned snapshot object; writes to Postgres `market_snapshots` table
+- [ ] **P1-06** Add stale-data detection: flag `has_data_gap` if any source is > 60s old;
+      stale snapshot must propagate `has_data_gap: true` to `ResearchPacket`
+
+#### Analyst Agents (wrapping TradingAgents)
+- [ ] **P1-07** Wrap TradingAgents `FundamentalsAnalyst` with HL adapter; output conforms to
+      `AnalystScore` proto; write prompt policy to
+      `packages/prompt-policies/analyst/fundamental/v1/`
+- [ ] **P1-08** Wrap TradingAgents `SentimentAnalyst`; add bot-filter confidence weight to
+      score calculation; output `AnalystScore`; prompt policy in
+      `packages/prompt-policies/analyst/sentiment/v1/`
+- [ ] **P1-09** Wrap TradingAgents `NewsAnalyst`; output `AnalystScore`; prompt policy in
+      `packages/prompt-policies/analyst/news/v1/`
+- [ ] **P1-10** Wrap TradingAgents `TechnicalAnalyst`; add HL-specific indicators (funding
+      rate z-score, OI delta, liquidation proximity); output `AnalystScore`; prompt policy in
+      `packages/prompt-policies/analyst/technical/v1/`
+- [ ] **P1-11** Write new `OnchainAnalyst` (not in base TradingAgents framework); output
+      `AnalystScore`; prompt policy in `packages/prompt-policies/analyst/onchain/v1/`
+- [ ] **P1-12** Implement `ResearchPacket` assembler: aggregates 5 `AnalystScore` objects +
+      market regime classification (`MarketRegime` enum) + all feature flags from snapshot
+- [ ] **P1-13** Write `ResearchPacket` and individual `AnalystScore` records to Postgres
+      `analyst_reports` table keyed on `cycle_id`
+
+#### Orchestrator
+- [ ] **P1-14** Implement analyst dispatch in Orchestrator: fan-out to 5 analysts in parallel,
+      collect results with per-analyst timeout (default 30s), assemble `ResearchPacket`
+- [ ] **P1-15** Implement partial `DecisionTrace` write after analyst stage completes;
+      `final_state.result` set to `partial` until cycle completes
+
+### Exit Gate
+
+✅ `POST /cycles/trigger` with `mode: paper` produces a complete `ResearchPacket` in Postgres
+✅ All 5 analyst scores populated with real data (no stubs or hardcoded values)
+✅ `has_data_gap` flag correctly set when a source is stale or unavailable
+✅ `DecisionTrace` row exists in Postgres with populated `research_packet` field
+
+---
+
+## Phase 2 — Debate, Trader Agent, and Trace Persistence
+
+**Goal:** Full decision pipeline from analysts through to `TradeIntent`, with every artifact
+persisted. No execution yet; executor remains stubbed.
+
+### Tasks
+
+#### Researchers and Debate
+- [ ] **P2-01** Wrap TradingAgents `BullResearcher`: consumes `ResearchPacket`, produces bull
+      thesis with evidence refs, score, and supporting analyst refs; prompt policy in
+      `packages/prompt-policies/bull/v1/`
+- [ ] **P2-02** Wrap TradingAgents `BearResearcher`: same structure for bear thesis; prompt
+      policy in `packages/prompt-policies/bear/v1/`
+- [ ] **P2-03** Implement debate `Facilitator`: runs N rounds (configurable via
+      `config/strategies/`, default 2), produces `DebateOutcome` with `consensus_strength`
+      and `open_risks`; prompt policy in `packages/prompt-policies/facilitator/v1/`
+- [ ] **P2-04** Implement `consensus_strength` gate: if `consensus_strength` falls below
+      `config.min_consensus_threshold`, emit `action: FLAT` and persist trace with
+      `final_state.result: flat` without proceeding to trader
+
+#### Trader Agent
+- [ ] **P2-05** Wrap TradingAgents `TraderAgent` as `apps/agents/trader/trader_agent.py`
+      (replaces legacy `trading_agent.py` if present); consumes `ResearchPacket` +
+      `DebateOutcome`; produces typed `TradeIntent`; prompt policy in
+      `packages/prompt-policies/trader/v1/`
+- [ ] **P2-06** Implement `TradeIntent` validation: all required fields present, `action`
+      is valid `Direction` enum, `confidence` and `thesis_strength` in [0.0, 1.0],
+      `target_notional_pct` within configured bounds
+- [ ] **P2-07** Migrate any logic from legacy `strategy_paper.py` / `strategy_live.py` that
+      belongs in the trader agent into `trader_agent.py`; strategy files become thin plugin
+      wrappers calling the agent pipeline
+
+#### Orchestration and Persistence
+- [ ] **P2-08** Wire full cycle: analyst → debate → trader → write complete partial
+      `DecisionTrace` (all artifacts up to `trade_intent`)
+- [ ] **P2-09** Implement stubbed execution path: if `trade_intent.action != FLAT`, log
+      intent and record `result: no_fill` in `final_state`; no exchange calls
+- [ ] **P2-10** Implement `GET /traces/:id` endpoint returning full `DecisionTrace` JSON
+- [ ] **P2-11** Implement `GET /traces` with pagination and filters: `asset`, `mode`,
+      date range, `result` type, `strategy_version`
+
+### Exit Gate
+
+✅ `POST /cycles/trigger` returns a complete `DecisionTrace` with `research_packet`,
+   `debate_outcome`, and `trade_intent` all populated
+✅ `consensus_strength < threshold` correctly routes to FLAT and persists trace without
+   invoking trader
+✅ All artifacts retrievable via `GET /traces/:id`
+✅ No execution attempted (executor stub receives zero calls)
+✅ `trading_program.md` updated to reflect multi-agent pipeline intent
+
+---
+
+## Phase 3 — Risk Council, Fund Manager, and SAE
+
+**Goal:** Three-profile risk committee, fund-manager portfolio governance, and non-bypassable
+SAE approval. Architecture invariants verified by automated tests.
+
+### Tasks
+
+#### Risk Committee
+- [ ] **P3-01** Wrap TradingAgents risk management agents into 3 typed profiles:
+      `RiskAggressiveAgent`, `RiskNeutralAgent`, `RiskConservativeAgent`; each in
+      `apps/agents/risk/`
+- [ ] **P3-02** Each profile consumes `TradeIntent` + current portfolio state (from
+      `fill_reconciler` state); emits typed `RiskVote`
+- [ ] **P3-03** Implement committee aggregator: combines 3 votes into `RiskReview` with
+      `committee_result` logic:
+      - All approve → `approve`
+      - 2 approve, 1 dissents → `approve_with_modification`
+      - Majority or all reject → `reject`
+- [ ] **P3-04** Write prompt policies for all 3 risk profiles under
+      `packages/prompt-policies/risk-aggressive/v1/`,
+      `packages/prompt-policies/risk-neutral/v1/`,
+      `packages/prompt-policies/risk-conservative/v1/`
+
+#### Fund Manager
+- [ ] **P3-05** Implement `FundManagerAgent` in `apps/agents/fund_manager/fund_manager_agent.py`:
+      consumes `ExecutionApprovalRequest` (trade intent + risk review + portfolio state);
+      applies concentration limits, daily PnL gates, correlation constraints
+- [ ] **P3-06** Emits `ExecutionApproval` with `final_notional_pct`, `final_leverage`, and
+      `execution_algo`; rejection sets `approved: false` with `rejection_reason`
+- [ ] **P3-07** Write prompt policy for fund manager under
+      `packages/prompt-policies/fund-manager/v1/`
+
+#### SAE Engine
+- [ ] **P3-08** Implement all SAE checks per SPEC.md §9.2 as deterministic rule functions
+      in `apps/sae-engine/`; **no LLM calls, no network calls** inside SAE hot path
+- [ ] **P3-09** Implement SAE check execution order: checks run sequentially; first failure
+      stops evaluation and populates `checks_failed`; all passing checks populate
+      `checks_passed`
+- [ ] **P3-10** Implement `ExecutionDecision` emitter with `staged_requests` when approved
+- [ ] **P3-11** Implement SAE policy hot-reload via `POST /sae/policies/reload`; policy
+      changes take effect within 5 seconds without service restart
+- [ ] **P3-12** Write initial SAE policy YAML files under `config/policies/default_v1.yaml`
+      with all thresholds from SPEC.md §9.2 as defaults
+
+#### Architecture Invariant Tests
+- [ ] **P3-13** Write test: no `ExecutionRequest` is created unless
+      `ExecutionDecision.allowed == true` — executor receives zero calls when SAE rejects
+- [ ] **P3-14** Write test: executor stub receives no calls when SAE rejects
+- [ ] **P3-15** Write test: `RiskReview.committee_result == reject` produces no
+      `ExecutionApproval` when `require_risk_unanimity` is configured
+- [ ] **P3-16** Write full cycle trace test: verify all 8 artifact types present in
+      `DecisionTrace` for an approved cycle: `research_packet`, `debate_outcome`,
+      `trade_intent`, `risk_review`, `execution_approval_req`, `execution_approval`,
+      `sae_decision`, `final_state`
+
+### Exit Gate
+
+✅ All invariant tests pass (P3-13, P3-14, P3-15)
+✅ Full `DecisionTrace` with all 8 artifact types persisted (P3-16)
+✅ SAE rejects correctly when any policy threshold is exceeded
+✅ `POST /sae/policies/reload` takes effect within 5 seconds without service restart
+✅ No LLM calls exist anywhere in `apps/sae-engine/` (verified by grep in CI)
+
+---
+
+## Phase 4 — Paper Executor, Treasury, and Evaluation Harness
+
+**Goal:** Real HyperLiquid paper trading with fill reconciliation, treasury module operational
+in paper mode, full backtesting capability, ablation suite, and MLflow experiment tracking.
+
+### Tasks
+
+#### Paper Executor
+- [ ] **P4-01** Implement `HyperLiquidPaperExecutor` in `apps/executors/hyperliquid_paper.py`:
+      submits `ExecutionRequest` to HL paper API using staged requests from `ExecutionDecision`;
+      handles partial fills; records `FillReport`
+- [ ] **P4-02** Implement `FillReconciler` in `apps/executors/fill_reconciler.py`: updates
+      portfolio state (position, realized PnL, unrealized PnL, exposure, drawdown) from
+      fill reports; writes to Postgres `fills` table
+- [ ] **P4-03** Implement paper portfolio state machine:
+      `FLAT → OPENING → LONG/SHORT → CLOSING → FLAT`
+- [ ] **P4-04** Implement funding payment accrual for open positions (mark-to-market every 8h)
+- [ ] **P4-05** Implement slippage and fee modeling per HL maker/taker fee schedule using
+      configurable fee tier in `.env`
+
+#### Treasury Module (Paper Mode)
+- [ ] **P4-06** Implement `TreasuryManager` in `apps/treasury/treasury_manager.py`: evaluates
+      realized PnL against conversion triggers per `config/` treasury policy
+- [ ] **P4-07** In paper mode, treasury conversions are **simulated** (no real spot orders);
+      log simulated conversion events to `treasury_events` table with `mode: paper`
+- [ ] **P4-08** Implement `ConversionPolicy` loader in `apps/treasury/conversion_policy.py`;
+      load from `config/policies/treasury_default_v1.json` per SPEC.md §8.3
+- [ ] **P4-09** Write `treasury_event` field into `DecisionTrace` JSON after each cycle that
+      triggers an evaluation (even if no conversion occurs)
+
+#### Evaluation Jobs
+- [ ] **P4-10** Implement `backtest_runner.py` in `apps/jobs/`: replay historical cycles
+      using only data available at each decision point; no look-ahead allowed; outputs
+      MLflow run with all metrics per SPEC.md §11.1
+- [ ] **P4-11** Implement ablation variants in `apps/jobs/ablation_runner.py`:
+      - `variant: single_agent` — analyst scores only, no debate, no risk committee
+      - `variant: no_debate` — skip debate, trader uses `ResearchPacket` directly
+      - `variant: no_risk_committee` — skip risk review, fund manager only
+      - `variant: no_sae` — skip SAE checks (**paper only, never live**)
+      - `variant: no_fund_manager` — skip fund manager approval
+      - `variant: no_treasury` — skip treasury evaluation
+      - `variant: full_system` — all stages active
+- [ ] **P4-12** Implement `prompt_policy_scorer.py` in `apps/jobs/`: evaluates prompt-policy
+      version candidates against held-out cycles; outputs score and recommendation to
+      `optimizer_runs` table
+
+#### Metrics and Dashboard
+- [ ] **P4-13** Implement metrics collector: all trading, process, and safety metrics per
+      SPEC.md §11.1
+- [ ] **P4-14** Integrate Prometheus metrics export via `GET /metrics` on Orchestrator API
+- [ ] **P4-15** Set up Grafana dashboard per SPEC.md §11 using configs in
+      `infra/observability/`
+- [ ] **P4-16** Build `apps/dashboard/` decision trace viewer: cycle timeline, per-artifact
+      drill-down, debate transcript, SAE check results, treasury event display
+- [ ] **P4-17** Build experiment comparison view: ablation results table,
+      Sharpe/drawdown/hit-rate charts per variant
+- [ ] **P4-18** Build prompt-policy history view: version tree, per-version metrics, scoring
+      history
+
+### Exit Gate
+
+✅ System can run 48h continuous paper trading on BTC-PERP without crashes or unhandled
+   exceptions
+✅ `backtest_runner.py` produces reproducible results (same seed → same output, verified
+   by running twice)
+✅ All 7 ablation variants run cleanly; `full_system` vs `single_agent` comparison available
+   in MLflow
+✅ Treasury paper-mode simulation running; `treasury_events` rows appearing in Postgres
+✅ Dashboard shows complete trace for any cycle via `cycle_id` lookup including treasury field
+✅ No metric fabrication: all numbers traceable to actual fills, simulated events, or explicit
+   stubs in test fixtures
+
+---
+
+## Phase 5 — OpenClaw Governance and HITL
+
+**Goal:** OpenClaw adapter fully operational, Clawvisor HITL rulesets enforced for all
+configurable trigger conditions, human approval UI live, and all governance actions logged.
+
+### Tasks
+
+#### OpenClaw Adapter
+- [ ] **P5-01** Implement `apps/orchestrator-api/src/adapters/openclaw/` with action scope
+      mapping:
+      - `cycle:trigger` — start a cycle
+      - `policy:update` — update SAE/HITL policy
+      - `hitl:approve` — approve an open HITL gate
+      - `service:halt` — emergency halt
+      - `service:resume` — resume after halt
+      - `strategy:promote` — promote strategy version
+      - `prompt-policy:promote` — promote prompt-policy version
+      - `treasury:convert` — manually trigger treasury conversion
+- [ ] **P5-02** Implement authentication: OpenClaw API key validation and action scope
+      enforcement; unknown scopes return 403
+- [ ] **P5-03** Implement event push to OpenClaw: cycle started, cycle completed, HITL gate
+      opened, HITL approved, SAE rejected, fill received, treasury conversion triggered
+
+#### HITL Engine
+- [ ] **P5-04** Implement HITL gate evaluation in Orchestrator: after `ExecutionApproval`,
+      before SAE, evaluate active `HITLRuleSet` — if any rule matches, pause cycle and emit
+      `hitl_gate_open` event to OpenClaw; write pending state to `decision_traces`
+- [ ] **P5-05** Implement `POST /governance/hitl-rules/:rule/approve` handler: resumes
+      paused cycle with human identity, approval timestamp, and notes logged to
+      `human_approvals` table
+- [ ] **P5-06** Implement HITL timeout handler: on timeout, apply `on_timeout` policy
+      (`reject` or `approve` per ruleset); log timeout event to `governance_events`
+- [ ] **P5-07** Load initial ruleset from `config/hitl-rulesets/default_v1.json` per
+      SPEC.md §6.6 including the `treasury_large_conversion` rule
+
+#### Governance Actions
+- [ ] **P5-08** Implement strategy version promotion: requires HITL approval in live mode;
+      swaps active strategy atomically; old version remains queryable in `strategy_versions`
+      registry
+- [ ] **P5-09** Implement prompt-policy promotion: same pattern; version is immutable once
+      promoted; only new version IDs may be created
+- [ ] **P5-10** Implement `POST /governance/prompt-policies/promote` and
+      `POST /governance/strategies/promote` endpoints
+- [ ] **P5-11** Write all governance actions to `governance_events` table:
+      promotions, approvals, halts, resumes, sign-offs, policy reloads
+
+#### Dashboard Governance View
+- [ ] **P5-12** Build HITL approval queue in dashboard: shows open gates, approval/reject
+      buttons, timeout countdown, rule that triggered, cycle context
+- [ ] **P5-13** Build governance audit log view: all events from `governance_events` table,
+      filterable by type and date range
+- [ ] **P5-14** Build treasury approval queue: shows pending large-conversion HITL gates
+      with conversion amount, trigger reason, and current BTC/USDC price context
+
+### Exit Gate
+
+✅ Paper cycle with `notional_pct >= 0.05` correctly opens HITL gate and pauses until
+   approval or timeout
+✅ Strategy promotion in paper mode rejected without HITL approval when live ruleset is active
+✅ Treasury large-conversion HITL gate fires when simulated conversion exceeds threshold
+✅ All governance actions appear in `governance_events` within 1 second of completion
+✅ `make chaos-hitl-timeout` test passes: timed-out HITL gate correctly rejects cycle and
+   logs timeout event
+
+---
+
+## Phase 6 — Optimizer Agent (Off-Path)
+
+**Goal:** Autonomous AI optimizer agent operational, submitting prompt-policy and strategy
+recommendations for human review via the governance queue — never auto-promoting.
+
+### Tasks
+
+- [ ] **P6-01** Implement `apps/agents/optimizer/optimizer_agent.py` as a long-running
+      background process that reads from Postgres `decision_traces` and `ablation_results`
+- [ ] **P6-02** Implement pattern detection: correlate prompt-policy versions, analyst
+      configurations, and strategy parameters with improved metrics (Sharpe, drawdown,
+      hit rate) using statistical significance thresholds
+- [ ] **P6-03** Implement candidate proposal generator: creates versioned prompt-policy
+      candidates in `packages/prompt-policies/` with a `status: candidate` field
+- [ ] **P6-04** Implement auto-submission to `prompt_policy_scorer.py` evaluation harness;
+      score results written to `optimizer_runs` table
+- [ ] **P6-05** Implement governance queue poster: writes approved recommendations to
+      `governance_events` with `event_type: optimizer_recommendation`; triggers OpenClaw
+      notification to human operator
+- [ ] **P6-06** Add invariant test: verify optimizer agent has **zero ability** to call
+      `POST /governance/prompt-policies/promote` directly; all promotions require human
+      sign-off through HITL flow
+- [ ] **P6-07** Build optimizer recommendations view in dashboard: pending recommendations,
+      scoring evidence, one-click promote button (triggers HITL gate for human approval)
+
+### Exit Gate
+
+✅ Optimizer runs for 24h without crash, producing at least one recommendation in
+   `optimizer_runs`
+✅ P6-06 invariant test passes (optimizer cannot self-promote)
+✅ Optimizer recommendation visible in dashboard with scoring evidence
+✅ Operator can approve recommendation via dashboard → HITL gate → promotion flow end-to-end
+
+---
+
+## Phase 7 — Live Execution and Recovery Hardening
+
+**Goal:** HyperLiquid live execution enabled under strict operator-controlled conditions, with
+full recovery state machine, live treasury conversions, chaos testing passing, and incident
+playbooks verified before any unattended live trading.
+
+### Tasks
+
+#### Live Executor
+- [ ] **P7-01** Implement `HyperLiquidLiveExecutor` in `apps/executors/hyperliquid_live.py`:
+      real order submission using `ExecutionDecision.staged_requests`
+- [ ] **P7-02** Implement second-line live position limit enforcement at executor level
+      (redundant with SAE; belt-and-suspenders)
+- [ ] **P7-03** Implement live order status polling and partial fill handling with
+      configurable polling interval
+- [ ] **P7-04** Implement emergency close: `POST /control/emergency-close` triggers
+      immediate FLAT of all open positions via reduce-only market orders on HL live
+
+#### Live Treasury
+- [ ] **P7-05** Enable real spot conversion in `TreasuryManager` for live mode: submits
+      BTC/USDC spot orders via HL live executor
+- [ ] **P7-06** Treasury conversions > threshold require HITL approval before order
+      submission (per ruleset `treasury_large_conversion` rule)
+- [ ] **P7-07** Write fill receipts from treasury conversions to `treasury_events` with
+      `mode: live` and actual fill prices/amounts
+
+#### Recovery State Machine
+- [ ] **P7-08** Implement `recovery_state` table heartbeat: each service writes last known
+      safe state every 30s
+- [ ] **P7-09** Implement recovery coordinator: on restart after crash, reads
+      `recovery_state` per service, reconciles against actual HL position (REST query),
+      resolves any drift before resuming cycles
+- [ ] **P7-10** Implement split-brain detection: if two Orchestrator instances are detected
+      (via Postgres advisory lock), both halt immediately and alert via OpenClaw
+
+#### Chaos and Hardening Tests
+- [ ] **P7-11** `make chaos-agent-kill` — kill agents service mid-cycle; verify no orphaned
+      `ExecutionRequest` reaches executor
+- [ ] **P7-12** `make chaos-sae-kill` — kill SAE mid-cycle; verify executor receives no
+      requests (SAE is required in pipeline)
+- [ ] **P7-13** `make chaos-stale-data` — inject 120s stale market snapshot; verify SAE
+      rejects on `stale_data` check and cycle emits `FLAT`
+- [ ] **P7-14** `make chaos-position-drift` — manually modify HL paper position out-of-band;
+      verify reconciler detects drift and alerts
+- [ ] **P7-15** `make chaos-prompt-injection` — inject adversarial text into news feed;
+      verify SAE hard gates are not bypassable by narrative content alone
+- [ ] **P7-16** Write and verify all runbooks in `docs/runbooks/`:
+      - `halt-and-resume.md`
+      - `emergency-close.md`
+      - `position-drift-recovery.md`
+      - `prompt-policy-rollback.md`
+      - `stale-data-incident.md`
+      - `treasury-conversion-failure.md`
+
+#### Production Readiness Gate
+- [ ] **P7-17** Two-person sign-off: independent review of SAE policy YAML, HITL ruleset
+      JSON, and live strategy config; both identities logged in `governance_events` with
+      `event_type: production_signoff`
+- [ ] **P7-18** 30-day continuous paper trading run with no unhandled crashes and no
+      manual interventions required
+- [ ] **P7-19** Full ablation results available in MLflow for current `strategy_live` version
+      showing `full_system` outperforms `single_agent` on Sharpe with acceptable drawdown
+- [ ] **P7-20** All chaos tests passing (P7-11 through P7-15)
+
+### Exit Gate
+
+✅ All P7-11 through P7-15 chaos tests pass
+✅ 30-day paper run complete with no unhandled crashes (P7-18)
+✅ P7-17 two-person sign-off complete and logged in `governance_events`
+✅ Live executor correctly flat-closes all positions via
+   `POST /control/emergency-close`
+✅ Treasury live mode converts correctly and is blocked by HITL gate on amounts above
+   threshold
+✅ All runbooks written and reviewed
+
+---
+
+## Implementation Defaults
+
+### Language Choices
+
+| Service | Language | Rationale |
 |---|---|---|
-| 0 | Foundation & Scaffolding | Repo, CI, secrets, docker-compose, empty stubs compile and lint |
-| 1 | Core Data & Intelligence Layer | IntelliClaw client live, IntelSnapshot flowing to analyst stubs |
-| 2 | Agent Firm — Decision Pipeline | All 12 agents implemented; full cycle runs in paper mode |
-| 3 | Strategy Iteration & Autoresearch | Paper bot + overnight loop + promotion gate operational |
-| 4 | Live Execution & Vault | SAE engine, executors, vault, live bot, recovery state machine |
-| 5 | Observability, MLflow & Governance | Dashboard complete, MultiClaw-MLFlow wired, data governance page |
-| 6 | Control Plane & Production Hardening | OpenClaw integration, K8s GitOps, load/chaos testing, audits |
+| `agents` | Python | TradingAgents framework is Python-native; ML/AI ecosystem |
+| `jobs` | Python | Pandas/NumPy/MLflow ecosystem |
+| `executors` | Python | HL Python SDK is most complete |
+| `treasury` | Python | Shares portfolio state types with executors |
+| `orchestrator-api` | TypeScript/Node | Strict API discipline, low-latency coordination |
+| `sae-engine` | TypeScript/Node | Deterministic rules, zero LLM runtime dependency |
+| `dashboard` | Next.js (TypeScript) | React ecosystem, fast iteration on governance UI |
 
-Each phase has a **Gate** — a minimum set of passing automated checks before the next phase begins.
+### Non-Negotiable Engineering Rules
 
----
-
-## Phase 0 — Foundation & Scaffolding
-
-**Goal:** Every service builds, lints, and starts without errors. No business logic yet.
-
-### 0.1 Repository Hygiene
-
-- [ ] Confirm branch protection on `main` (require PR + 1 review)
-- [ ] Add `CODEOWNERS` for locked files (`agent/`, `strategy/strategy_base.py`,
-      `apps/agents/src/strategies/base_strategy.py`, `apps/sae-engine/`)
-- [ ] Set up `.env.example` with all required vars from SPEC §11.1
-- [ ] Add pre-commit hooks: `ruff`, `mypy`, `eslint`, `prettier`
-- [ ] Add `Makefile` targets: `dev`, `test`, `lint`, `build`, `migrate`
-
-### 0.2 Service Stubs
-
-- [ ] `apps/orchestrator-api` — Express/Fastify skeleton, health endpoint `/healthz`
-- [ ] `apps/sae-engine` — TypeScript skeleton, health endpoint `/healthz`
-- [ ] `apps/agents` — Python package, `main.py` with startup banner
-- [ ] `apps/executors` — Python package skeleton
-- [ ] `apps/dashboard` — Next.js `create-next-app` scaffold
-- [ ] `apps/jobs` — Python package skeleton
-
-### 0.3 Infrastructure
-
-- [ ] `docker-compose.yml` — all services start and reach healthy state
-- [ ] K8s base manifests in `infra/k8s/base/` for all pods (SPEC §11.2)
-- [ ] ArgoCD ApplicationSet pointing at `main` branch (SPEC §11.3)
-- [ ] `multiclaw/mlflow/infra/docker-compose.yml` — MLflow + Postgres + MinIO starts
-      (`make mlflow-up`)
-- [ ] K8s Secrets template for `HL_PRIVATE_KEY`, `VAULT_SUBACCOUNT_ADDRESS`,
-      `INTELLICLAW_API_KEY`, `LLM_API_KEY`
-
-### 0.4 Database Migrations
-
-- [ ] SQLite schema for `logs/experiments.db` (SPEC §8, §4.2):
-  - `experiments` table
-  - `paper_outcomes` table
-  - `rl_aggregates` table
-- [ ] Postgres schema for dashboard performance store (SPEC §10.3):
-  - `candles` table
-  - `bot_performance` table
-
-### Phase 0 Gate
-
-```
-✓ docker compose up --wait  → all services healthy
-✓ make lint                 → zero errors
-✓ make test                 → (empty suite passes)
-✓ ArgoCD sync               → all deployments green
-```
+1. **No LLM output is executable trading authority on its own** — all agent outputs are
+   typed artifacts consumed by downstream deterministic services
+2. **All adaptation happens off the hot path** — prompt-policy changes, strategy upgrades,
+   and evaluation results are promoted through explicit versioned gates requiring human
+   approval
+3. **SAE has zero LLM dependency** — it is a pure rule engine; any attempt to add LLM calls
+   to `apps/sae-engine/` requires an architecture review and SPEC.md update before
+   implementation
+4. **DecisionTrace is immutable once written** — no in-place updates; corrections only via
+   append-only `DecisionTraceAmendment` records with operator identity
+5. **Live mode always requires HITL** — the ruleset rule `live_always_requires_human`
+   may not be removed without a two-person governance sign-off logged in `governance_events`
+6. **Chaos tests must pass before live** — no exceptions to P7-11 through P7-15
+7. **Optimizer agent never self-promotes** — P6-06 invariant test must remain in CI
+   permanently; failure blocks merge
 
 ---
 
-## Phase 1 — Core Data & Intelligence Layer
+## Milestone Summary
 
-**Goal:** `IntelSnapshot` flows end-to-end from IntelliClaw through the client to analyst stubs.
-All analysts can be instantiated and called; they log structured output even if not yet LLM-backed.
-
-### 1.1 IntelliClaw Service Deployment
-
-> **Prerequisite:** IntelliClaw repo cloned from `https://github.com/AIML-Solutions/IntelliClaw.git`
-> and deployed as `intelliclaw` service in the cluster.
-
-- [ ] Add `intelliclaw` entry to `docker-compose.yml` (image or build from source)
-- [ ] Add `infra/k8s/base/intelliclaw-deploy.yaml` + `Service`
-- [ ] Verify `GET http://intelliclaw:8080/intel/snapshot?asset=BTC` returns valid JSON
-- [ ] Document expected response schema in `docs/intelliclaw-api-contract.md`
-
-### 1.2 IntelSnapshot Schema (`apps/agents/src/types/intel.py`) ✅ DONE
-
-All dataclasses implemented and committed:
-- `IntelHeadline`, `IntelOnChain`, `IntelFundamental`, `IntelAlert`, `IntelSnapshot`
-- `from_dict()` deserializers on each class
-- `.has_critical_alerts`, `.high_importance_headlines`, `.to_analyst_context()` helpers
-- Legacy plain-string alert backwards-compatibility path
-
-Remaining:
-- [ ] Unit tests: `tests/unit/test_intel_schema.py`
-  - Valid full payload deserialises without error
-  - Legacy plain-string alerts are promoted to `IntelAlert`
-  - `to_analyst_context()` output matches expected format
-  - `has_critical_alerts` returns correct bool
-
-### 1.3 IntelliClaw Client (`apps/agents/src/tools/intelliclaw_client.py`) ✅ DONE
-
-Full client implemented and committed:
-- `get_intel_snapshot()` — cached (TTL), retried (3× exp. backoff)
-- `search_events()` — historical event lookup
-- `iter_alert_stream()` — polling alert generator
-- `get_multi_snapshot()` — batch wrapper
-- `IntelliClawError` exception class
-
-Remaining:
-- [ ] Unit tests: `tests/unit/test_intelliclaw_client.py`
-  - Mock HTTP 200: returns valid `IntelSnapshot`
-  - Mock HTTP 500 × 3: raises `IntelliClawError` after retries
-  - Cache hit path: second call does not make HTTP request
-  - `bypass_cache=True` path: always fetches
-  - `get_multi_snapshot`: partial failure skips failed asset and logs warning
-- [ ] Integration test: `tests/integration/test_intelliclaw_live.py`
-  - Marked `@pytest.mark.integration` — requires live IntelliClaw service
-  - Assert `IntelSnapshot.asset == "BTC"` and `confidence` in `[0.0, 1.0]`
-
-### 1.4 Analyst Agent Stubs — IntelliClaw Wiring
-
-All analysts in `apps/agents/src/agents/` must follow SPEC §2.3:
-
-```python
-from ..tools.intelliclaw_client import get_intel_snapshot
-
-class <Role>AnalystAgent:
-    def generate_report(self, asset: str) -> <Role>AnalystReport:
-        intel = get_intel_snapshot(asset)
-        ...
-```
-
-- [ ] `sentiment_analyst.py` — reference implementation (IntelliClaw sentiment + headlines)
-- [ ] `news_analyst.py` — consumes `intel.headlines` + `intel.key_points`
-- [ ] `onchain_analyst.py` — consumes `intel.onchain`; enriches with Glassnode/Dune if available
-- [ ] `fundamental_analyst.py` — consumes `intel.fundamental`; fetches macro data
-- [ ] `market_analyst.py` — primary from HL candles; uses `intel.alerts` for context
-
-All stubs must:
-- Return a typed `*AnalystReport` dataclass (define in `apps/agents/src/types/reports.py`)
-- Log the `to_analyst_context()` string at DEBUG level
-- Surface `IntelliClawError` upstream without swallowing
-
-### 1.5 Market Data Ingestor
-
-- [ ] `apps/jobs/src/market_ingestor.py` — polls HL `candleSnapshot` API, writes to
-      `candles` table (SPEC §10.3)
-- [ ] WebSocket `candle` stream subscription for live incremental updates
-- [ ] Backfill job: loads 365-day rolling window of 1-minute candles on first start
-
-### Phase 1 Gate
-
-```
-✓ make test tests/unit/test_intel_schema.py        → all pass
-✓ make test tests/unit/test_intelliclaw_client.py  → all pass
-✓ python -m apps.agents.src.agents.sentiment_analyst BTC
-    → prints non-empty AnalystReport JSON without error
-✓ Market ingestor writes at least 1 candle row to DB
-```
-
----
-
-## Phase 2 — Agent Firm Decision Pipeline
-
-**Goal:** A complete `POST /cycles/trigger` request executes all 7 stages
-(Analysts → Debate → Trader → Risk → Fund Manager → SAE → Executor stub)
-and returns a structured decision trace in paper mode.
-
-### 2.1 Report & Decision Type System (`apps/agents/src/types/reports.py`)
-
-Define all typed dataclasses:
-
-- [ ] `MarketAnalystReport` — OHLCV summary, vol regime, trend label
-- [ ] `NewsAnalystReport` — top headlines, narrative summary from IntelliClaw
-- [ ] `FundamentalAnalystReport` — macro regime, Fear/Greed, dominance
-- [ ] `OnChainAnalystReport` — net flows, whale activity, reserve changes
-- [ ] `SentimentAnalystReport` — overall_sentiment, score, confidence
-- [ ] `ResearchSummary` — bull/bear case, facilitator synthesis
-- [ ] `TradeDecision` — asset, direction (`long`/`short`/`flat`), size_pct, entry_type
-- [ ] `RiskVote` — profile (`aggressive`/`neutral`/`conservative`), approve/veto, rationale
-- [ ] `TradeOrder` — validated order with fund manager constraints applied
-- [ ] `ExecutionPlan` — SAE staged plan with algo hints (TWAP/VWAP/POV/Iceberg)
-- [ ] `DecisionTrace` — full audit record of one decision cycle (all above + timestamps)
-
-### 2.2 Analyst Agents — LLM Implementation
-
-- [ ] Implement LLM call pattern in each analyst using `apps/agents/src/atlas/` prompts:
-  - System prompt from `prompts/` templates
-  - User prompt built from `intel.to_analyst_context()` + market data
-  - Response parsed into typed `*AnalystReport`
-- [ ] `apps/agents/src/config/model_routing.yaml` — define which LLM model/provider
-      handles each agent role
-- [ ] LLM retry and fallback logic (structured output validation, max 2 retries)
-
-### 2.3 Research Debate (`apps/agents/src/agents/debate/`)
-
-- [ ] `bullish_researcher.py` — argues long case from analyst reports
-- [ ] `bearish_researcher.py` — argues short/flat case from analyst reports
-- [ ] `facilitator.py` — synthesises both into `ResearchSummary`
-
-### 2.4 Trader Agent (`apps/agents/src/agents/trader.py`)
-
-- [ ] Consumes `ResearchSummary` + all `*AnalystReport`s
-- [ ] Selects a `BaseStrategy` plugin from `apps/agents/src/strategies/`
-- [ ] Produces a `TradeDecision`
-
-### 2.5 Risk Council (`apps/agents/src/agents/risk_council.py`)
-
-- [ ] Three independent `RiskVote` calls (aggressive / neutral / conservative profiles)
-- [ ] Majority rule: 2/3 approve → proceed; unanimous veto → halt
-- [ ] Config flag: `require_unanimous_approve` for conservative deployments
-
-### 2.6 Fund Manager (`apps/agents/src/agents/fund_manager.py`)
-
-- [ ] Applies portfolio-level constraints:
-  - Concentration cap (max % in single asset)
-  - Daily loss limit guard (SPEC §6.1)
-  - Correlation check (multi-asset future)
-- [ ] Produces `TradeOrder` from approved `TradeDecision`
-
-### 2.7 SAE Engine — Core Policy Validation (`apps/sae-engine/`)
-
-> SAE is non-bypassable. All trade paths must route through it (SPEC §7).
-
-- [ ] `POST /sae/validate` — validate `TradeOrder` against current policies
-- [ ] `PUT /sae/policies` — update per-asset SAE policy (SPEC §15)
-- [ ] Policy schema in `config/strategies/` YAML:
-  - `max_leverage`, `max_size_usd`, `max_drawdown_pct`, `allowed_algos`
-- [ ] Staged execution plan builder:
-  - TWAP, VWAP, POV, Iceberg logic stubs (full implementation Phase 4)
-- [ ] Regime detection: reads current `RecoveryState` to tighten caps in recovery
-- [ ] SAE unit tests: `tests/unit/test_sae_engine.ts`
-
-### 2.8 Strategy Plugins
-
-- [ ] `apps/agents/src/strategies/grid_bot.py` — extend `BaseStrategy`
-- [ ] `apps/agents/src/strategies/dca_bot.py` — extend `BaseStrategy`
-- [ ] `apps/agents/src/strategies/rsi_reversion.py` — extend `BaseStrategy`
-- [ ] `apps/agents/src/strategies/hyperliquid_perps_meta.py` — extend `BaseStrategy`
-- [ ] Strategy plugin registry: load by name from `model_routing.yaml`
-
-### 2.9 Executor Stub (Paper Mode)
-
-- [ ] `apps/executors/src/paper_executor.py` — simulates fill at mid ± half-spread
-- [ ] Writes `PaperTradeOutcome` row to `paper_outcomes` table
-- [ ] No real orders; `TRADE_MODE=paper` guard
-
-### 2.10 Orchestrator Decision Cycle
-
-- [ ] `POST /cycles/trigger` — runs full 7-stage pipeline, returns `DecisionTrace`
-- [ ] `GET /traces/:id` — retrieve stored `DecisionTrace` (SPEC §15)
-- [ ] `GET /metrics` — live performance summary (SPEC §15)
-- [ ] Decision traces persisted to Postgres
-
-### Phase 2 Gate
-
-```
-✓ POST /cycles/trigger {"asset":"BTC","mode":"paper"}
-    → HTTP 200, DecisionTrace JSON with all 7 stages populated
-    → paper_outcomes row written to DB
-✓ make test tests/unit/  → all pass
-✓ No executor call bypasses SAE (enforced by architecture test)
-```
-
----
-
-## Phase 3 — Strategy Iteration & Autoresearch
-
-**Goal:** Overnight loop runs 100 iterations, scores strategies, commits accepted
-candidates via git, ArgoCD picks up the diff, paper bot self-improves.
-
-### 3.1 Evaluation Harness (`agent/harness.py`) (SPEC §8)
-
-- [ ] `score()` function: Sharpe (annualised, 15-minute bars), max_drawdown,
-      win_rate, profit_factor, n_trades
-- [ ] Backtest runner: replays `candles` data against a `strategy_paper.py` instance
-- [ ] 5-minute timeout enforced via `asyncio.wait_for`
-- [ ] `should_keep()` logic (SPEC §4.5):
-  - Hard reject: `max_drawdown > 0.08` or `n_trades < 10`
-  - Accept: new Sharpe > best Sharpe AND new drawdown ≤ best × 1.1
-- [ ] Unit tests: `tests/unit/test_harness.py` — deterministic fixture data
-
-### 3.2 RL Buffer (`agent/rl_buffer.py`)
-
-- [ ] Async write: `PaperTradeOutcome` → `paper_outcomes` SQLite table
-- [ ] Rolling aggregate query: `get_aggregates(hours=48)` → `RLAggregate`
-- [ ] `meets_promotion_criteria()` check: Sharpe ≥ 1.5, win_rate ≥ 0.45,
-      n_trades ≥ 30, not in recovery
-- [ ] Unit tests: `tests/unit/test_rl_buffer.py`
-
-### 3.3 Paper Bot (`agent/paper_bot.py`) (SPEC §4.1)
-
-- [ ] WebSocket subscription to HL live trades feed
-- [ ] Candle buffer accumulation (15-minute bars)
-- [ ] Signal generation via active `strategy_paper.py`
-- [ ] Simulated fill at mid ± half-spread
-- [ ] `PaperTradeOutcome` written to RL buffer on each close
-- [ ] `_check_promotion_criteria()` async check after each close
-- [ ] Paper bot never paused; runs 24/7
-
-### 3.4 Agent Proposal Context (`agent/iteration_loop.py`) (SPEC §4.3)
-
-- [ ] `build_proposal_context()` — assembles:
-  - `trading_program.md` goals
-  - Last 20 experiment records
-  - Last 48-hour RL aggregates
-  - Last 50 paper trade outcomes
-  - Current live config (paper only at this stage)
-  - Market snapshot (funding rate, vol regime from `get_intel_snapshot`)
-  - `RecoveryState`
-- [ ] Agent `propose_strategy()` — sends context to LLM; constrains to max 3
-      `StrategyConfig` parameter changes; requires justification referencing
-      paper trade outcomes (SPEC §4.4)
-
-### 3.5 Strategy Validation (`agent/iteration_loop.py`)
-
-- [ ] `validate_strategy_module(code: str) -> bool`:
-  - AST parse: no `import` of executor, SAE, or exchange modules
-  - No modification to `VAULT_SUBACCOUNT_ADDRESS`
-  - Only `StrategyConfig` dataclass fields changed (max 3)
-  - `strategy_paper.py` only; never writes `strategy_live.py`
-- [ ] Security: `exec()` only in sandboxed subprocess (no network)
-
-### 3.6 Overnight Loop (`agent/iteration_loop.py`) (SPEC §4.4)
-
-- [ ] Scheduled: cron at 02:00 UTC (configurable)
-- [ ] `max_iterations=100` (normal), `200` (recovery)
-- [ ] Each iteration:
-  1. Build proposal context
-  2. LLM proposes strategy
-  3. Validate module
-  4. Run backtest (5 min timeout)
-  5. `should_keep()` check
-  6. Accept: write to `experiments`, `git commit`, `git push`
-  7. Reject: log reason, continue
-- [ ] `git_commit_strategy()`: commits `strategy/strategy_paper.py` with tag
-      `paper/v{N}` and rationale message
-- [ ] ArgoCD picks up push → rolling restart of paper-eval pod (SPEC §11.3)
-
-### 3.7 MLflow Experiment Logging (SPEC §9)
-
-- [ ] All backtest runs log to `multiclaw/mlflow` via `MLFLOW_TRACKING_URI`
-- [ ] Required fields: model family, dataset id, all `StrategyConfig` params,
-      Sharpe/max_dd/win_rate/profit_factor, artifact URI, operator role
-- [ ] `mlflow.log_artifact("strategy/strategy_paper.py")` on each accepted run
-- [ ] Integration test: `tests/integration/test_mlflow_logging.py`
-
-### Phase 3 Gate
-
-```
-✓ overnight_loop(max_iterations=5) completes without crash
-✓ At least 1 experiment committed to git with tag paper/v{N}
-✓ ArgoCD detects commit → paper pod restarts with new strategy
-✓ make test tests/unit/test_harness.py  → all pass
-✓ make test tests/unit/test_rl_buffer.py → all pass
-✓ MLflow UI shows ≥ 1 run in experiment "backtest_*"
-```
-
----
-
-## Phase 4 — Live Execution & Vault
-
-**Goal:** System can execute real orders on HyperLiquid perps under SAE guard,
-deduct vault on profitable trades, and enter/exit recovery mode correctly.
-
-> **Risk gate:** Phase 4 work is done exclusively in `TRADE_MODE=paper` until
-> all Phase 4 gate checks pass. Live mode requires a manual K8s Secret patch
-> (`TRADE_MODE=live`, `TRADE_MODE_CONFIRM=yes`).
-
-### 4.1 HyperLiquid Executor (`apps/executors/src/hl_executor.py`)
-
-- [ ] `hyperliquid-python-sdk` integration (SPEC §1.3)
-- [ ] Order placement: `exchange.order()` for market and limit orders
-- [ ] Order cancellation: `exchange.cancel()`, `exchange.cancel_all()`
-- [ ] Position close: `exchange.market_close()`
-- [ ] User state poll: `info.user_state()` at 1 Hz for reconciliation
-- [ ] Rate limiter: token bucket, 3 req/s avg, burst 5 (SPEC §6.4)
-- [ ] `TRADE_MODE` guard: raises `TradingModeError` if not `live` + `TRADE_MODE_CONFIRM`
-
-### 4.2 SAE Engine — Execution Algorithms (SPEC §7)
-
-- [ ] TWAP executor: splits order into N equal slices over T minutes
-- [ ] VWAP executor: sizes slices proportional to historical volume profile
-- [ ] POV executor: participates at X% of real-time market volume
-- [ ] Iceberg executor: shows only Y% of order size at a time
-- [ ] Algo selection: SAE policy YAML per asset specifies allowed algos
-
-### 4.3 Live Bot (`agent/live_bot.py`) (SPEC §5)
-
-- [ ] `LiveSession` dataclass (SPEC §5.1): tracks equity, peak, vault balance,
-      halt reason
-- [ ] `close_position_and_vault()` (SPEC §5.2):
-  - Compute raw PnL and net PnL after fees
-  - Deduct `vault_take_pct` (clamped 10–20%) from profitable trades only
-  - Transfer vault amount to `VAULT_SUBACCOUNT_ADDRESS`
-  - Update `LiveSession` state
-- [ ] Vault rules enforced (SPEC §5.3):
-  - Vault address read-only (K8s Secret)
-  - No withdrawal automation
-  - No vault re-deployment
-
-### 4.4 Safety Layer (`agent/safety.py`) (SPEC §6)
-
-- [ ] `SafetyGuard.check()` — raises `TradingHalt` on any limit breach
-- [ ] `SafetyGuard.validate_order()` — raises `OrderRejected` if `size_usd >
-      HARD_MAX_POSITION_USD`
-- [ ] Configurable limits via env vars: `HARD_MAX_POSITION_USD`,
-      `DAILY_LOSS_LIMIT_PCT`, `MAX_DRAWDOWN_PCT`
-- [ ] Unit tests: `tests/unit/test_safety.py` — verify each kill switch fires
-
-### 4.5 Recovery State Machine (`agent/recovery.py`) (SPEC §6.2, §6.3)
-
-- [ ] `check_recovery_threshold(session)` — triggers if `equity ≤ 50% session start`
-  - Cancels all open orders
-  - Closes all positions
-  - Sets `RecoveryState.active = True`
-  - Sends halt alert
-- [ ] Recovery mode effects:
-  - Live bot: halted
-  - Overnight loop: `max_iterations = 200`
-  - Paper bot: continues 24/7
-  - Promotion thresholds raised (Sharpe 2.0, win_rate 0.50, 72 h, 50 trades)
-- [ ] Recovery exit:
-  - All raised promotion criteria met
-  - `session_start_equity` resets to current equity
-  - `RecoveryState.active = False`
-- [ ] Alert integration: Slack/Telegram/email on enter and exit (SPEC §10.4)
-- [ ] Unit tests: `tests/unit/test_recovery.py`
-
-### 4.6 Promotion Logic
-
-- [ ] `promote_to_live(strategy)` in `paper_bot.py`:
-  - Reads current `RecoveryState`
-  - Checks all promotion criteria from RL buffer
-  - Writes `strategy/strategy_live.py` (only this path may write that file)
-  - Commits with tag `live/v{N}`
-  - Sends promotion alert
-- [ ] `strategy_live.py` guard: AST check in CI confirms only promotion logic
-      modifies this file
-
-### 4.7 Markets — BTC-PERP Primary
-
-- [ ] Live executor configured for `BTC-PERP` only (Phase 4)
-- [ ] `ETH-PERP` gated by `n_successful_btc_iterations >= 50` (SPEC §14)
-- [ ] Funding rate check: skip entry if adverse funding > 0.05%/8 h (SPEC §13)
-
-### Phase 4 Gate
-
-```
-✓ make test tests/unit/test_safety.py   → all kill switches fire correctly
-✓ make test tests/unit/test_recovery.py → state transitions correct
-✓ Paper mode live_bot runs 1 h with no errors; vault deductions logged
-✓ Manually trigger recovery: live halts, paper continues, loop uses 200 iters
-✓ Recovery exit: session_start_equity resets, RecoveryState.active = False
-✓ HARD: TRADE_MODE=live requires manual K8s Secret patch confirmed by 2nd person
-```
-
----
-
-## Phase 5 — Observability, MLflow & Governance
-
-**Goal:** Dashboard is fully operational. All experiments tracked in MLflow.
-Governance page shows data source policies and Hypersignal approval state.
-
-### 5.1 Dashboard — Core Pages (SPEC §10.2)
-
-- [ ] **Market Research** (`/research`)
-  - 365-day 1-minute candle chart (TradingView Lightweight Charts or Recharts)
-  - Strategy entry/exit markers from `paper_outcomes`
-  - Regime annotations from `intel.fundamental.regime`
-- [ ] **Paper Trading Performance** (`/paper`)
-  - Cumulative P/L, rolling Sharpe, max DD, win rate
-  - Fees, funding, vault transfers chart
-- [ ] **Live Trading Performance** (`/live`)
-  - Same as paper + live equity curve vs. session start equity
-  - Vault balance tracker
-- [ ] **Strategy Experiments** (`/experiments`)
-  - List: run_id, timestamp, Sharpe, max_dd, kept/rejected, rationale
-  - MLflow run link per experiment
-- [ ] **Risk & Halt Status** (`/status`)
-  - Current mode badge: `BACKTEST | PAPER | LIVE | RECOVERY`
-  - Kill switch state indicators
-  - Recovery threshold gauge (current equity vs. 50% floor)
-
-### 5.2 Dashboard API (`apps/dashboard/` FastAPI backend)
-
-- [ ] `GET /api/candles?asset=BTC&interval=1m&from=&to=`
-- [ ] `GET /api/performance?bot=paper|live`
-- [ ] `GET /api/experiments?limit=50`
-- [ ] `GET /api/status` — current mode, kill switch states, recovery flags
-- [ ] `GET /api/vault` — vault balance, transfer history
-- [ ] `GET /api/governance/hypersignal` — config IDs, latest MLflow metrics,
-      SAE approval state per config
-- [ ] `GET /api/governance/experiments` — MLflow experiment/run summaries
-- [ ] `POST /api/governance/hypersignal/approve` — approve a config for live use
-
-### 5.3 12-Hour Status Reporter (SPEC §10.4)
-
-- [ ] Scheduled: every 12 hours
-- [ ] Content: paper P/L, live P/L, account balance, vault balance,
-      current drawdown, current state
-- [ ] Delivery: Slack webhook (primary), Telegram bot (fallback), email (tertiary)
-- [ ] Reporter failures logged + ops alert; trading never halted by reporter failure
-- [ ] No secrets, keys, or wallet material in notification payloads
-
-### 5.4 Hypersignal Accuracy Tracking (SPEC §9 + MultiClaw-MLFlow)
-
-- [ ] `apps/jobs/src/hypersignal_eval.py`:
-  - MLflow experiment: `hypersignal_accuracy`
-  - Params: provider, config_id, dataset, window_hours
-  - Metrics: accuracy, AUC, correlation, PnL uplift
-  - `mlflow.log_artifact()` for evaluation dataset
-- [ ] `evaluate_hypersignal_config` OpenClawTool wrapper
-- [ ] `data_source_policies` Postgres table:
-  - `id`, `name`, `type`, `status` (`experimental|approved|disabled`),
-    `sae_regimes_enabled` (JSON), `last_evaluated_run_id`
-- [ ] SAE engine reads `data_source_policies` at startup and on `PUT /sae/policies`
-
-### 5.5 Governance Dashboard Page (`/governance`)
-
-- [ ] `HypersignalGovernanceTable` component: config list, metrics, approval CTA
-- [ ] `ExperimentList` component: MLflow runs with key metrics
-- [ ] `PolicyDiffViewer` component: SAE policy change history
-- [ ] Approval action: `POST /api/governance/hypersignal/approve` → updates
-      `data_source_policies` + SAE policy reload
-
-### 5.6 Dashboard Auth (SPEC §10.5)
-
-- [ ] Deploy behind SSO or reverse-proxy auth (e.g., Authelia, Cloudflare Access)
-- [ ] Confirm no API route exposes `HL_PRIVATE_KEY`, `VAULT_SUBACCOUNT_ADDRESS`,
-      or `INTELLICLAW_API_KEY` in any response
-
-### Phase 5 Gate
-
-```
-✓ All 6 dashboard pages render with real data (no mock)
-✓ 12-hour status message delivered to Slack with correct P/L values
-✓ hypersignal_eval.py run → MLflow experiment visible at :5000
-✓ Governance page shows IntelliClaw config approval state
-✓ Dashboard auth blocks unauthenticated access
-```
-
----
-
-## Phase 6 — Control Plane & Production Hardening
-
-**Goal:** OpenClaw integration operational. System passes load testing, chaos
-testing, and security review. Ready for continuous live operation.
-
-### 6.1 OpenClaw Integration (SPEC §15)
-
-- [ ] `POST /cycles/trigger` — validates OpenClaw caller token
-- [ ] `PUT /sae/policies` — auth-gated; only OpenClaw controller and manual ops
-- [ ] `PUT /config/strategy` — updates paper strategy config (not `strategy_paper.py`
-      directly; must go through proposal + validation)
-- [ ] `GET /traces/:id` — returns full `DecisionTrace` JSON
-- [ ] `GET /metrics` — live performance summary
-- [ ] MultiClaw OpenClawTools registration:
-  - `run_trading_cycle` → `POST /cycles/trigger`
-  - `backtest_strategy` → `apps/jobs/src/backtest_runner.py`
-  - `evaluate_hypersignal_config` → `apps/jobs/src/hypersignal_eval.py`
-  - `update_sae_policy` → `PUT /sae/policies`
-  - `intel_get_snapshot` → `apps/agents/src/tools/intelliclaw_client.get_intel_snapshot`
-  - `intel_search_events` → `apps/agents/src/tools/intelliclaw_client.search_events`
-
-### 6.2 Multi-Worker Redis Cache
-
-- [ ] Replace in-process `_snapshot_cache` dict in `intelliclaw_client.py`
-      with Redis-backed TTL cache for multi-pod deployments (SPEC §2.1 note)
-- [ ] Add Redis to `docker-compose.yml` and K8s manifests
-- [ ] `INTELLICLAW_CACHE_BACKEND=redis` env var toggle (default: in-process)
-
-### 6.3 Load & Chaos Testing
-
-- [ ] Load test: `POST /cycles/trigger` at 10 req/min for 30 min — no errors,
-      p99 latency < 30 s
-- [ ] Chaos: kill `intelliclaw` pod mid-cycle — `IntelliClawError` surfaces
-      correctly; trading cycle fails gracefully without placing orders
-- [ ] Chaos: kill `sae-engine` pod — executor receives no orders; alert fires
-- [ ] Chaos: kill `orchestrator-api` pod — ArgoCD restores in < 60 s
-- [ ] Network partition: WS disconnect from HL feed — reconnect within 5 s;
-      paper bot resumes without missed fills
-
-### 6.4 Security Review
-
-- [ ] Secret scanning: `git log` for any accidental key commits
-- [ ] Confirm `VAULT_SUBACCOUNT_ADDRESS` has zero code write paths (grep audit)
-- [ ] Confirm `strategy_live.py` has only one write path (promotion logic)
-- [ ] Confirm no executor can be called without passing SAE validation
-- [ ] Confirm dashboard API has no key-leaking routes
-- [ ] Dependency audit: `pip audit`, `npm audit` — no critical CVEs
-- [ ] Review Hypersignal / IntelliClaw prompt injection surface
-      (per Hypersignal Accuracy Limitations research findings):
-  - All IntelliClaw text injected into LLM prompts is passed through
-    `to_analyst_context()` only — no raw external text in system prompts
-  - `intel.alerts[].message` strings are HTML-escaped before prompt injection
-  - SAE `has_critical_alerts` gate checked before any LLM-driven position increase
-
-### 6.5 Operational Runbooks
-
-- [ ] `docs/runbooks/live-enable.md` — step-by-step K8s Secret patch for live mode
-- [ ] `docs/runbooks/recovery-manual-exit.md` — how to manually clear recovery state
-- [ ] `docs/runbooks/vault-withdrawal.md` — manual vault withdrawal checklist
-- [ ] `docs/runbooks/intelliclaw-outage.md` — degraded operation without IntelliClaw;
-      analysts fall back to market-data-only mode
-- [ ] `docs/runbooks/rollback-strategy.md` — git revert + ArgoCD force-sync
-
-### 6.6 ETH-PERP Unlock
-
-- [ ] Gate check: `n_successful_btc_iterations >= 50` in SQLite (SPEC §14)
-- [ ] `get_multi_snapshot(["BTC", "ETH"])` used by analysts when ETH unlocked
-- [ ] SAE policy YAML added for `ETH-PERP`
-- [ ] Market ingestor extended to backfill ETH 1-minute candles
-
-### Phase 6 Gate
-
-```
-✓ OpenClaw `run_trading_cycle` tool calls return valid DecisionTrace
-✓ Load test: p99 < 30 s, zero 5xx errors over 30 min
-✓ Chaos tests: all failure modes fail safely (no unguarded orders)
-✓ Security: zero secrets in git history, zero key-leaking routes
-✓ All runbooks reviewed by second engineer
-✓ LIVE MODE: first trade executes; vault deduction confirmed on-chain
-```
-
----
-
-## Cross-Cutting Concerns
-
-### Testing Strategy
-
-| Layer | Tool | Location |
-|---|---|---|
-| Python unit tests | `pytest` | `tests/unit/` |
-| TypeScript unit tests | `vitest` | `apps/*/src/__tests__/` |
-| Integration tests | `pytest` (marked) | `tests/integration/` |
-| E2E dashboard tests | `playwright` | `tests/e2e/` |
-| Load testing | `k6` | `tests/load/` |
-| Chaos testing | manual + `chaos-mesh` | `tests/chaos/` |
-
-All unit tests must pass before any PR merges to `main`.
-Integration tests run in CI with service containers (IntelliClaw mock).
-
-### Locked Files (Never Agent-Editable)
-
-The following files must not be modified by LLM agents under any circumstance.
-CODEOWNERS enforces human review for all changes:
-
-```
-agent/main.py
-agent/exchange.py
-agent/safety.py
-agent/harness.py
-agent/iteration_loop.py
-agent/paper_bot.py
-agent/live_bot.py
-agent/rl_buffer.py
-agent/recovery.py
-strategy/strategy_base.py
-apps/agents/src/strategies/base_strategy.py
-apps/sae-engine/
-```
-
-### Environment Progression
-
-```
-local dev → docker compose up
-    ↓
-CI/CD     → GitHub Actions (lint, test, build)
-    ↓
-paper K8s → ArgoCD paper environment (TRADE_MODE=paper)
-    ↓
-live K8s  → ArgoCD live environment (manual Secret patch required)
-```
-
-### Dependency Versions (pin in `requirements.txt` and `package.json`)
-
-| Dependency | Version | Notes |
-|---|---|---|
-| `hyperliquid-python-sdk` | latest stable | Pin exact version |
-| `requests` | ≥ 2.31 | For IntelliClaw client |
-| `urllib3` | ≥ 2.0 | For `Retry` backoff |
-| `mlflow` | ≥ 2.10 | For experiment tracking |
-| `numpy` | ≥ 1.26 | For harness scoring |
-| `pytest` | ≥ 8.0 | Test runner |
-| `ruff` | ≥ 0.4 | Linter/formatter |
-| `mypy` | ≥ 1.8 | Type checker |
-| TypeScript | 5.x | Orchestrator + SAE |
-| Next.js | 14.x | Dashboard |
-
----
-
-## Progress Tracker
-
-| Phase | Status | Completed | Outstanding |
+| Phase | Name | Exit Gate Summary | Est. Duration |
 |---|---|---|---|
-| 0 — Foundation | 🟡 In Progress | Repo structure, service stubs, SPEC.md | CI/CD, full docker-compose, K8s manifests |
-| 1 — Intelligence Layer | 🟡 In Progress | `intel.py` schema ✅, `intelliclaw_client.py` ✅ | Unit tests, analyst wiring, market ingestor |
-| 2 — Agent Pipeline | 🔴 Not Started | — | All agent implementations, SAE core, orchestrator cycle |
-| 3 — Autoresearch | 🔴 Not Started | — | Harness, RL buffer, paper bot, overnight loop, MLflow |
-| 4 — Live Execution | 🔴 Not Started | — | HL executor, vault, recovery state machine, promotion |
-| 5 — Observability | 🔴 Not Started | — | Dashboard pages, governance, status reporter |
-| 6 — Production | 🔴 Not Started | — | OpenClaw tools, load/chaos tests, security review, runbooks |
+| 0 | Scaffolding | All services boot, contracts compile, DB migrates | 1 week |
+| 1 | Analysts | ResearchPacket persisted with real data, 5 analyst types | 2 weeks |
+| 2 | Debate + Trader | Full TradeIntent trace retrievable, strategy files migrated | 2 weeks |
+| 3 | Risk + SAE | Architecture invariants pass, no LLM in SAE | 2 weeks |
+| 4 | Paper + Eval + Treasury | 48h paper run, ablations in MLflow, treasury simulating | 3 weeks |
+| 5 | Governance + HITL | HITL gates enforced, promotions logged, treasury HITL working | 2 weeks |
+| 6 | Optimizer Agent | Recommendations flowing, cannot self-promote | 2 weeks |
+| 7 | Live + Recovery | All chaos tests, 30d paper, two-person sign-off | 4+ weeks |
 
 ---
 
-## Open Questions / Decisions Needed
+## Open Questions
 
-| # | Question | Owner | Priority |
-|---|---|---|---|
-| 1 | IntelliClaw deployment: run from source or pull image? What is the startup config? | Engineering | High |
-| 2 | LLM provider selection for agents: OpenAI GPT-4o, Anthropic Claude, or local? | Engineering | High |
-| 3 | Redis: deploy in cluster now (Phase 1) or defer to Phase 6? | Engineering | Medium |
-| 4 | Dashboard auth: Cloudflare Access, Authelia, or Nginx basic-auth for dev? | Engineering | Medium |
-| 5 | Status reporter: Slack webhook vs. Telegram bot — which is set up first? | Ops | Low |
-| 6 | ETH-PERP timing: is 50 BTC iterations the right gate or should it be time-based? | Engineering | Low |
-| 7 | MultiClaw-Core deployment: same cluster or separate? How are OpenClawTools auth tokens provisioned? | Engineering | Medium |
+- [ ] **Submodule vs vendor:** Will `TauricResearch/TradingAgents` be a git submodule (keeps
+      upstream updates accessible) or fully vendored copy (simpler CI, no submodule
+      sync issues)? Recommend submodule with a pinned commit SHA.
+- [ ] **HL mainnet vs testnet:** Target HyperLiquid mainnet or testnet for initial paper
+      trading in Phase 4? Testnet recommended until Phase 5 HITL is operational.
+- [ ] **IntelliClaw feed:** Is the existing API key and field schema documented? Required
+      before Phase 1 P1-02 can be completed.
+- [ ] **Treasury threshold:** What USD-equivalent triggers BTC → USDC conversion? Required
+      before Phase 4 P4-08. Recommended starting default: $500 min, $10,000 HITL threshold.
+- [ ] **Two-person sign-off identities:** Identify both signatories for the P7-17
+      production readiness gate before Phase 6 begins.
+- [ ] **Optimizer statistical threshold:** What minimum statistical significance (p-value
+      or effect size) is required before optimizer generates a recommendation? Define before
+      Phase 6 P6-02.
+- [ ] **Model routing keys:** Which model providers (OpenAI, Anthropic, local) and which
+      specific model versions map to each routing tier in `config/model-routing/`? Define
+      before Phase 1 P1-07 to ensure prompt policies are written for the correct backbone.
