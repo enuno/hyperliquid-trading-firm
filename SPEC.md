@@ -141,6 +141,13 @@ hyperliquid-trading-firm/
 │  │  │  └─ fund_manager_agent.py
 │  │  └─ optimizer/
 │  │     └─ optimizer_agent.py
+│  ├── quant
+│  │   ├── feeds
+│  │   │   └── hyperliquid_feed.py
+│  │   ├── regimes
+│  │   │   └── regime_mapper.py
+│  │   └── sizing
+│  │       └── kelly_sizing_service.py
 │  ├─ sae-engine/
 │  ├─ executors/
 │  │  ├─ hyperliquid_paper.py
