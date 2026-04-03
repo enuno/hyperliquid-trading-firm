@@ -132,6 +132,7 @@ This should bring up:
 
 ```text
 apps/
+  quant/              # Quant-Zero Kelly Sizing
   orchestrator-api/   # Node/TS REST+WS API and agent coordination
   sae-engine/         # TypeScript SAE policy evaluation and staging
   agents/             # Python LLM agents, analysts, and strategy plugins
