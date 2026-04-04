@@ -1,943 +1,609 @@
-# hyperliquid-trading-firm — System Specification
+# Hyperliquid Trading Firm — System Specification
 
-> **Version:** 2.2.0
-> **Last updated:** 2026-03-29
-> **Status:** Active development — paper trading target
-> **Repo:** https://github.com/enuno/hyperliquid-trading-firm
+**Version:** 2.2 — April 2026  
+**Status:** Active Development — Phase A  
+**Repo:** https://github.com/enuno/hyperliquid-trading-firm
 
 ---
 
-## 1. Purpose and Scope
+## Table of Contents
 
-`hyperliquid-trading-firm` is an **auditable, modular, multi-agent LLM trading system** targeting
-HyperLiquid perpetuals. It is modeled after the organizational structure of a real trading firm,
-implementing the architecture described in the
-[TradingAgents paper (arXiv 2412.20138)](https://arxiv.org/pdf/2412.20138) and the
-[TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) open-source
-framework, further extended by the arena-style debate and observer-layer architecture from the
-[FinArena paper (arXiv 2509.11420)](https://arxiv.org/abs/2509.11420).
+1. [Overview](#1-overview)
+2. [Design Principles](#2-design-principles)
+3. [System Architecture](#3-system-architecture)
+4. [Agent Roles and Responsibilities](#4-agent-roles-and-responsibilities)
+5. [Data Flow](#5-data-flow)
+6. [ObservationPack Schema](#6-observationpack-schema)
+7. [TradeIntent Schema](#7-tradeintent-schema)
+8. [SAE — Safety and Execution Agent](#8-sae--safety-and-execution-agent)
+9. [FundManager](#9-fundmanager)
+10. [DecisionTrace and Audit Log](#10-decisiontrace-and-audit-log)
+11. [Treasury Management System](#11-treasury-management-system)
+12. [Phased Build Plan](#12-phased-build-plan)
+13. [Configuration and Environment](#13-configuration-and-environment)
+14. [Quant Layer — apps/quant/](#14-quant-layer--appsquant)
+15. [References](#15-references)
 
-The system extends the base TradingAgents framework with:
+---
 
-- A **ObserverAgent layer** that normalizes, tags, and contextualizes raw market data before
-  analysts ever receive it, improving context construction quality and information traceability
-- An **information partitioner** that deliberately creates asymmetric information subsets for
-  each debater, surfacing genuine disagreement that a single-context agent misses
-- An **arena-style multi-round debate panel** (3–5 debaters) with per-round belief revision
-  tracking — replacing the single bull/bear pair with a heterogeneous panel initialized with
-  different information subsets and different backbone LLM providers
-- An **ArbitratorAgent** that evaluates evidence quality across debate rounds, assigns
-  conviction-weighted outcomes, and mandates HOLD when evidence quality is insufficient
-- A **Safety Approval Engine (SAE)** — non-bypassable deterministic pre-execution policy
-  enforcement including new crypto-native checks for debate evidence quality and liquidation
-  cluster proximity
-- An **OpenClaw control plane** adapter for operator governance, HITL gating, and strategy
-  lifecycle management
-- A **Clawvisor HITL ruleset** system for operator-defined human approval requirements
-- An **autonomous AI agent layer** for continuous performance optimization and monitoring
-- A **treasury management module** — automated BTC-to-stablecoin conversion for risk
-  management and profitability from Bitcoin price volatility
-- Full **DecisionTrace** persistence so every trade decision is replayable and attributable
-- A **reflection and continuous-improvement loop** for post-trade analysis and prompt-policy
-  evolution (off the hot path)
+## 1. Overview
 
-### What This System Does
+This system is an institutional-grade autonomous trading agent for HyperLiquid perpetuals. It combines a multi-agent LLM debate architecture with deterministic quantitative pre-processing, a fractional Kelly sizing model, and a multi-layer safety enforcement chain.
 
-The system operates as an autonomous, AI-driven trading organization on HyperLiquid:
+**Core mission:** Generate risk-adjusted returns on HL perps using structured agent debate, quant-validated signals, and fail-safe execution — not speculation.
 
-1. **Observes** — `ObserverAgent` normalizes raw market data, onchain signals, news, and
-   sentiment into a structured `ObservationPack` with staleness metadata and a `regime_tag`
-2. **Partitions** — `InformationPartitioner` creates asymmetric information subsets so each
-   debater reasons from a distinct (but overlapping) evidence base
-3. **Analyzes** — Five specialist analysts (fundamental, sentiment, news, technical, onchain)
-   produce typed `AnalystScore` objects assembled into a `ResearchPacket`
-4. **Debates** — A 3-debater panel (bull-initialized, bear-initialized, neutral) runs N rounds
-   of cross-examination in the arena; each debater's conviction score is tracked per round
-5. **Arbitrates** — `ArbitratorAgent` resolves the debate with an evidence-quality score and
-   `ArbitratorVerdict`; mandates HOLD if evidence is too thin
-6. **Synthesizes** — Trader agent produces a typed `TradeIntent` incorporating belief revision
-   delta and funding-rate-adjusted leverage
-7. **Reviews** — Three-profile risk committee and fund manager govern position sizing
-8. **Gates** — Non-bypassable SAE and optional Clawvisor HITL approval before execution
-9. **Executes** — HyperLiquid paper or live markets via staged execution requests
-10. **Learns** — Post-trade reflection, ablation evaluation, and optimizer agent recommendations
-
-This system treats **live execution as safety-critical**. No LLM output is ever executable
-trading authority on its own. All adaptation happens off the hot path.
+**Key constraints:**
+- All strategies are hypotheses to be validated before live deployment
+- No guaranteed profits; every component must be independently audited
+- LLM agents are advisory; SAE is the final deterministic gate before any order
+- Closed bars only for all quantitative analysis — never include an incomplete bar
 
 ---
 
 ## 2. Design Principles
 
-| Principle | Implementation |
-|---|---|
-| Observer-first context construction | Raw data normalized by ObserverAgent before analysts; reduces context errors |
-| Information asymmetry in debate | Partitioner gives each debater a distinct evidence subset |
-| Evidence-citation requirement | Every debate claim must reference a specific ObservationPack artifact |
-| Belief revision as signal | Per-round conviction delta tracked; large negative delta compresses position size |
-| Arbitrated deadlock resolution | ArbitratorAgent mandates HOLD when evidence quality < threshold |
-| Model heterogeneity | Different LLM providers assigned to different roles to reduce correlated reasoning failure |
-| Role specialization | Separate analyst, debate, trader, risk, fund-manager agents |
-| Structured state over prompt chaining | Typed JSON/protobuf artifacts at every handoff |
-| Hard safety gates | SAE enforces policy; cannot be bypassed by any agent or operator |
-| Full auditability | Every artifact keyed on `cycle_id`; DecisionTrace persisted immutably |
-| Adaptation off the hot path | Prompt-policy changes require versioned promotion gates |
-| No-trade is a first-class outcome | HOLD/FLAT emitted when consensus is weak, evidence thin, or risks unresolved |
-| Live execution requires human approval | Clawvisor HITL ruleset gates all live-mode cycles |
-| Autonomous optimization | Optimizer agent continuously evaluates performance off the hot path |
-| Treasury-aware profitability | BTC-to-stablecoin conversion integrated into risk management |
+1. **Evidence-based, skeptical.** Treat all strategy hypotheses as unproven until out-of-sample validated.
+2. **Separation of concerns.** Signal generation, risk control, execution, and audit are strictly isolated modules.
+3. **Fail-closed by default.** Any stale data, missing context, or ambiguous state results in no trade — never a guess.
+4. **Immutable audit trail.** Every signal, decision, order, and fill is written to `DecisionTrace` before execution. No action without a trace.
+5. **No LLM authority over position sizing.** Kelly inputs must come from OOS historical statistics, not LLM confidence scores.
+6. **Deterministic safety layer.** SAE enforces hard limits independent of agent output. Agents cannot override SAE.
+7. **Observable and recoverable.** Every component exposes health metrics. Any failure must produce a clean recovery state, not corruption.
 
 ---
 
-## 3. Repository Structure
+## 3. System Architecture
 
-```text
-hyperliquid-trading-firm/
-├─ README.md
-├─ SPEC.md                              ← this file
-├─ DEVELOPMENT_PLAN.md
-├─ LICENSE
-├─ Makefile
-├─ docker-compose.yml
-├─ docker-compose.paper.yml
-├─ docker-compose.live.yml
-├─ .env.example
-│
-├─ proto/
-│  ├─ common.proto
-│  ├─ decisioning.proto                 # ObservationPack, ResearchPacket, DebateOutcome (updated),
-│  │                                    # ArbitratorVerdict, TradeIntent
-│  ├─ risk.proto
-│  ├─ execution.proto
-│  └─ controlplane.proto
-│
-├─ apps/
-│  ├─ orchestrator-api/
-│  ├─ agents/
-│  │  ├─ tradingagents/                 # git submodule: TauricResearch/TradingAgents
-│  │  ├─ adapters/
-│  │  ├─ observer/                      # NEW (FinArena)
-│  │  │  ├─ observer_agent.py           # Normalizes raw data → ObservationPack
-│  │  │  └─ information_partitioner.py  # Creates asymmetric subsets per debater
-│  │  ├─ analysts/
-│  │  │  ├─ fundamental.py
-│  │  │  ├─ sentiment.py
-│  │  │  ├─ news.py
-│  │  │  ├─ technical.py
-│  │  │  └─ onchain.py
-│  │  ├─ debate/
-│  │  │  ├─ arena_facilitator.py        # REPLACES facilitator.py — multi-round cross-examination
-│  │  │  ├─ arbitrator_agent.py         # NEW (FinArena) — resolves deadlock
-│  │  │  ├─ debater_a.py                # REPLACES bull.py — configurable init stance
-│  │  │  ├─ debater_b.py                # REPLACES bear.py
-│  │  │  └─ debater_c.py                # NEW — neutral debater
-│  │  ├─ trader/
-│  │  │  └─ trader_agent.py
-│  │  ├─ risk/
-│  │  │  ├─ aggressive.py
-│  │  │  ├─ neutral.py
-│  │  │  └─ conservative.py
-│  │  ├─ fund_manager/
-│  │  │  └─ fund_manager_agent.py
-│  │  └─ optimizer/
-│  │     └─ optimizer_agent.py
-│  ├── quant
-│  │   ├── feeds
-│  │   │   └── hyperliquid_feed.py
-│  │   ├── regimes
-│  │   │   └── regime_mapper.py
-│  │   └── sizing
-│  │       └── kelly_sizing_service.py
-│  ├─ sae-engine/
-│  ├─ executors/
-│  │  ├─ hyperliquid_paper.py
-│  │  ├─ hyperliquid_live.py
-│  │  └─ fill_reconciler.py
-│  ├─ treasury/
-│  │  ├─ treasury_manager.py
-│  │  └─ conversion_policy.py
-│  ├─ jobs/
-│  │  ├─ backtest_runner.py
-│  │  ├─ ablation_runner.py
-│  │  └─ prompt_policy_scorer.py
-│  └─ dashboard/
-│
-├─ packages/
-│  ├─ schemas/
-│  ├─ prompt-policies/
-│  │  ├─ observer/v1/                   # NEW
-│  │  ├─ analyst/
-│  │  ├─ debater-a/v1/                  # REPLACES bull/
-│  │  ├─ debater-b/v1/                  # REPLACES bear/
-│  │  ├─ debater-c/v1/                  # NEW
-│  │  ├─ arbitrator/v1/                 # NEW
-│  │  ├─ trader/
-│  │  ├─ risk-aggressive/
-│  │  ├─ risk-neutral/
-│  │  ├─ risk-conservative/
-│  │  └─ fund-manager/
-│  └─ strategy-sdk/
-│
-├─ config/
-│  ├─ env/
-│  ├─ policies/
-│  ├─ strategies/
-│  ├─ hitl-rulesets/
-│  ├─ debate-panels/                    # NEW — panel composition configs
-│  │  ├─ panel_3_default.json
-│  │  └─ panel_5_aggressive.json
-│  └─ model-routing/
-│     └─ heterogeneous_v1.json          # NEW — per-role provider routing
-│
-├─ strategy/
-│  ├─ strategy_paper.py
-│  ├─ strategy_live.py
-│  └─ trading_program.md
-│
-├─ infra/
-│  ├─ k8s/
-│  ├─ argocd/
-│  ├─ terraform/
-│  └─ observability/
-│
-├─ docs/
-│  ├─ architecture.md
-│  ├─ api-contracts.md
-│  ├─ protobuf.md
-│  ├─ tradingagents-integration.md
-│  ├─ finarena-integration.md           # NEW — FinArena adoption and crypto adaptation notes
-│  ├─ treasury.md
-│  └─ runbooks/
-│
-└─ tests/
-   ├─ contract/
-   ├─ integration/
-   ├─ simulation/
-   └─ chaos/
+```
+
+┌─────────────────────────────────────────────────────────────────┐
+│                        Data Ingestion                           │
+│  HyperliquidFeed (REST bootstrap → WS delta → REST reconcile)  │
+│  IntelliClaw (liquidation cluster feed)                        │
+└───────────────────────────┬─────────────────────────────────────┘
+│ HLMarketContext
+▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Quant Layer                                │
+│  WaveDetector + WaveAdapter  │  QZRegimeClassifier              │
+│  KellySizingService          │  (deterministic, no LLM)         │
+└───────────────────────────┬─────────────────────────────────────┘
+│ WaveAnalysisResult, RegimeMappingResult, KellyOutput
+▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     ObserverAgent                               │
+│  Assembles ObservationPack — merges quant outputs + raw market  │
+│  context into typed schema consumed by debate agents            │
+└───────────────────────────┬─────────────────────────────────────┘
+│ ObservationPack
+▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Debate Layer (LLM)                           │
+│  BullAgent  │  BearAgent  │  NeutralAgent / Moderator           │
+│  Structured adversarial debate → DebateResult                   │
+└───────────────────────────┬─────────────────────────────────────┘
+│ DebateResult
+▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     TraderAgent (LLM)                           │
+│  Synthesizes debate → emits TradeIntent (direction + rationale) │
+│  Calls KellySizingService to populate sizing fields             │
+└───────────────────────────┬─────────────────────────────────────┘
+│ TradeIntent
+▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   RiskCommitteeAgent (LLM)                      │
+│  Reviews TradeIntent against portfolio context                  │
+│  May veto, reduce size, or approve with conditions              │
+└───────────────────────────┬─────────────────────────────────────┘
+│ RiskReview
+▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      FundManager                                │
+│  Applies portfolio-level caps, correlation limits               │
+│  Emits ExecutionApproval with final notional                    │
+└───────────────────────────┬─────────────────────────────────────┘
+│ ExecutionApproval
+▼
+┌─────────────────────────────────────────────────────────────────┐
+│              SAE — Safety and Execution Agent                   │
+│  Final deterministic gate — enforces hard limits                │
+│  Writes DecisionTrace → submits order to HL                     │
+└───────────────────────────┬─────────────────────────────────────┘
+│ Order
+▼
+HyperLiquid Exchange
+
+```
+
+---
+
+## 4. Agent Roles and Responsibilities
+
+### 4.1 ObserverAgent
+
+Assembles `ObservationPack` from all available inputs. Does not interpret or trade.
+
+**Inputs:**
+- `HLMarketContext` from `HyperliquidFeed`
+- `WaveAnalysisResult` + `WaveSAEInputs` from `WaveAdapter`
+- `RegimeMappingResult` from `QZRegimeClassifier`
+- Active positions and open orders
+
+**Outputs:** Fully typed `ObservationPack` (see §6).
+
+**Constraints:**
+- Must not call LLM
+- Must set `has_data_gap = True` if any feed exceeds 60s stale
+- Must run `WaveAdapter.analyze()` on closed bars only
+
+### 4.2 BullAgent / BearAgent / NeutralAgent
+
+Adversarial LLM debate agents. Each receives the same `ObservationPack` and produces a structured argument for or against entering a position.
+
+**Outputs:** `DebatePosition` — structured argument with cited evidence from `ObservationPack`.
+
+**Constraints:**
+- Must cite specific fields from `ObservationPack` in every argument
+- Must not fabricate market data not present in `ObservationPack`
+- Confidence scores from debate are advisory only — never used as Kelly inputs
+
+### 4.3 TraderAgent
+
+Synthesizes debate output into a `TradeIntent`.
+
+**Outputs:** `TradeIntent` (see §7), including:
+- Direction (`LONG` / `SHORT` / `FLAT`)
+- Asset and timeframe
+- Entry/exit rationale linked to debate evidence
+- Kelly sizing fields (populated by `KellySizingService`)
+
+**Constraints:**
+- Must call `KellySizingService` with OOS-validated stats, not LLM confidence
+- Must emit `FLAT` if debate is inconclusive or `has_data_gap = True`
+
+### 4.4 RiskCommitteeAgent
+
+LLM agent that reviews `TradeIntent` against portfolio context and existing exposures.
+
+**Outputs:** `RiskReview` — approve / approve-with-reduction / veto.
+
+**Constraints:**
+- May only reduce `suggested_notional_pct`, never increase it
+- Must provide written rationale for any veto
+- Veto writes to `DecisionTrace` before propagating
+
+### 4.5 FundManager
+
+Deterministic (non-LLM) portfolio-level gating agent.
+
+**Inputs:** `RiskReview`, current portfolio state, correlation matrix.
+
+**Outputs:** `ExecutionApproval` with final `approved_notional_pct`.
+
+**Constraints:**
+- Hard cap: single position ≤ `FUND_MAX_SINGLE_POSITION_PCT` (default 10%)
+- Correlation cap: total correlated exposure ≤ `FUND_MAX_CORRELATED_EXPOSURE_PCT` (default 25%)
+- May not increase `suggested_notional_pct` from `RiskReview`
+
+### 4.6 SAE — Safety and Execution Agent
+
+Final deterministic gate. Enforces hard limits independent of all upstream agent output.
+
+See §8 for full SAE specification.
+
+---
+
+## 5. Data Flow
+
+### 5.1 Closed-Bar Invariant
+
+**All quantitative analysis runs on closed bars only.** The current incomplete bar is never included in any calculation. This is enforced at the feed adapter level (`HyperliquidFeed`) and validated in `WaveDetector`.
+
+Rationale: Intrabar calculations produce regime/wave false positives, unstable RSI values, and incorrect swing detection that vanish at bar close.
+
+### 5.2 Feed Reconciliation
+
+`HyperliquidFeed` reconciles REST vs WS state every 30 seconds. If a sequence gap is detected or any source exceeds 60 seconds stale:
+- `HLMarketContext.has_data_gap` is set to `True`
+- `ObservationPack.has_data_gap` is propagated
+- `TraderAgent` must emit `FLAT` on `has_data_gap = True`
+- SAE must reject any `ExecutionApproval` where source `ObservationPack.has_data_gap = True`
+
+### 5.3 Signal Freshness
+
+Every field in `ObservationPack` carries a `timestamp_utc`. SAE validates that all signals are within `MAX_SIGNAL_AGE_SECONDS` (default 120) before proceeding.
+
+---
+
+## 6. ObservationPack Schema
+
+`ObservationPack` is the typed, immutable context object passed from `ObserverAgent` to all downstream agents. It is written to `DecisionTrace` before any agent processes it.
+
+```python
+@dataclass(frozen=True)
+class ObservationPack:
+    # Identity
+    asset: str                          # e.g. "BTC-PERP"
+    timestamp_utc: datetime
+    has_data_gap: bool                  # True = fail-closed downstream
+
+    # Market state
+    mid_price: float
+    mark_price: float
+    index_price: float
+    bid: float
+    ask: float
+    spread_bps: float
+
+    # Order book depth
+    depth_10bps_usd: float              # Total liquidity within ±10bps
+    depth_50bps_usd: float
+
+    # Funding
+    funding_rate_8h: float              # Normalized to 8h regardless of venue cadence
+    funding_rate_annualized: float
+    predicted_funding_rate_8h: float
+
+    # Liquidation clusters (from IntelliClaw)
+    nearest_liq_cluster_above_pct: float   # % distance above mid
+    nearest_liq_cluster_below_pct: float   # % distance below mid
+    liq_cluster_density_above: float       # Relative density score 
+    liq_cluster_density_below: float
+
+    # Volatility
+    realized_vol_24h: float
+    realized_vol_7d: float
+    realized_vol_zscore: float              # Z-score vs 90-day history
+
+    # Regime (from QZRegimeClassifier)
+    market_regime: MarketRegime             # Canonical operational enum
+    qz_regime: QZRegime                     # Fine-grained regime label
+    regime_confidence: float                # 
+
+    # Wave structure (from WaveAdapter)
+    swing_high: Optional[SwingLevel]        # Nearest confirmed swing high
+    swing_low: Optional[SwingLevel]         # Nearest confirmed swing low
+    quantitative_baseline: dict             # Full wave analysis dict (see §14.4)
+
+    # Portfolio context
+    current_position_size: float
+    current_position_direction: str         # "LONG" | "SHORT" | "FLAT"
+    current_position_pnl_pct: float
+    current_position_age_bars: int
+
+    # Active orders
+    open_orders: List[dict]
+
+    # Quant baseline (arbitrary key-value store for additional signals)
+    # Standard keys: "wave", "momentum", "regime_history"
+```
+
+**`MarketRegime` enum values** (from `proto/common.proto`):
+
+- `TREND_UP`, `TREND_DOWN` — clean directional
+- `RANGE` — mean-reversion
+- `HIGH_VOL` — risk-control-dominant; overrides direction
+- `EVENT_RISK` — structural uncertainty; default to FLAT
+- `UNKNOWN` — insufficient data
+
+**`QZRegime` enum values** (fine-grained, from `apps/quant/regimes/`):
+
+- `trend_up_low_vol`, `trend_up_high_vol`
+- `trend_down_low_vol`, `trend_down_high_vol`
+- `range_low_vol`, `range_high_vol`
+- `event_breakout`
+- `liquidation_cascade_risk`
+- `funding_crowded_long`, `funding_crowded_short`
+
+---
+
+## 7. TradeIntent Schema
+
+```python
+@dataclass
+class TradeIntent:
+    # Identity
+    intent_id: str                      # UUID
+    asset: str
+    timestamp_utc: datetime
+    observation_pack_id: str            # Links to ObservationPack in DecisionTrace
+
+    # Decision
+    direction: str                      # "LONG" | "SHORT" | "FLAT"
+    rationale: str                      # Written justification citing ObservationPack fields
+    debate_summary: str                 # Condensed debate outcome
+
+    # Kelly sizing (populated by KellySizingService)
+    kelly_inputs: KellyInputs           # win_prob, payoff_ratio, source bucket, OOS trade count
+    kelly_output: KellyOutput           # raw_fraction, adjusted_fraction, penalties_applied
+    suggested_notional_pct: float       # Final Kelly-adjusted size as % of portfolio
+
+    # Entry/exit parameters
+    entry_price_estimate: float
+    stop_loss_price: float
+    take_profit_price: float
+    max_holding_bars: int
+
+    # Confidence (advisory only — never used as Kelly input)
+    agent_confidence: float             #  from TraderAgent — informational only
 ```
 
 
 ---
 
-## 4. Framework Integration
+## 8. SAE — Safety and Execution Agent
 
-### 4.1 TradingAgents (TauricResearch/TradingAgents)
+SAE is the final deterministic gate before any order reaches HyperLiquid. It is the only component with exchange API write access. It cannot be overridden by any agent output.
 
-The base TradingAgents framework provides the analyst agent hierarchy, trader synthesis pattern,
-risk management team structure, fund manager approval pattern, and backbone LLM routing concept.
-See `docs/tradingagents-integration.md` for full adoption details.
+### 8.1 Pre-execution Checks
 
-### 4.2 FinArena Integration (arXiv 2509.11420)
-
-The [FinArena paper](https://arxiv.org/abs/2509.11420) introduces arena-style multi-agent debate
-with structured evidence citation, belief revision tracking, and arbitrated deadlock resolution.
-These patterns are adopted and extended for crypto perpetuals.
-
-**What is adopted unchanged:**
-
-- Observer → Analyst → Debater → Arbitrator pipeline layering
-- Multi-round cross-examination debate structure
-- Evidence-citation requirement for all debate claims
-- Confidence-calibrated abstention (mandate HOLD when evidence quality insufficient)
-- Belief revision tracking per debater per round
-
-**What is extended for crypto perps:**
-
-- Observer adds crypto-native signals: funding rate regime, OI-weighted liquidation levels,
-perp basis (spot vs perp spread), whale vault flows, BTC dominance delta, regime tag
-- Debater initialization includes forced-bearish stance to counter equities-trained LLM
-bullish recency bias from 2020–2024 training data
-- `funding_rate_adjusted_leverage` computed in TraderAgent to penalize carry cost on longs
-- `liquidation_proximity` SAE check rejects or size-reduces trades near dense liq clusters
-- `regime_tag` added to ObservationPack to contextualize LLM reasoning
-
-**What remains unproven for live crypto:**
-
-- Arena debate improvement over single bull/bear pair is validated on equities backtests only;
-crypto perps walk-forward validation required before trusting performance claims
-- 3-debater panel vs 2-debater performance difference unvalidated; ablation required
-- Belief revision delta as a direct sizing signal is a novel extension not in the paper
+SAE validates all of the following before submitting any order. Failure on any check results in immediate REJECT with `DecisionTrace` entry:
 
 
-### 4.3 Model Heterogeneity
-
-FinArena recommends using different LLM providers for different roles to reduce correlated
-reasoning failure. This is implemented as `config/model-routing/heterogeneous_v1.json`.
-
-
-| Role | Provider | Rationale |
+| Check | Hard Limit | Source |
 | :-- | :-- | :-- |
-| Observer, sentiment, technical, onchain | OpenAI GPT-4o-mini | High-volume normalization/classification |
-| News, fundamental synthesis | OpenAI GPT-4o | Domain reasoning |
-| Debater A (bull-init) | Anthropic Claude Opus | Different reasoning bias from OpenAI |
-| Debater B (bear-init) | OpenAI o3 | Strong adversarial reasoning |
-| Debater C (neutral) | Google Gemini Ultra | Third-party perspective |
-| Arbitrator | Anthropic Claude Opus | Highest evidence evaluation quality |
-| Trader | OpenAI o3 | Final synthesis |
-| Risk committee (×3) | OpenAI GPT-4o | Parallel profile evaluation |
-| Fund manager | Anthropic Claude Opus | Portfolio constraint enforcement |
-| SAE | Deterministic rule engine | No LLM |
+| Signal freshness | All signals < 120s old | `ObservationPack.timestamp_utc` |
+| Data gap | `has_data_gap = False` | `ObservationPack.has_data_gap` |
+| Position size | ≤ `SAE_MAX_NOTIONAL_PCT` (10%) | `ExecutionApproval.approved_notional_pct` |
+| Notional USD | ≤ `SAE_MAX_NOTIONAL_USD` | Config |
+| Leverage | ≤ `SAE_MAX_LEVERAGE` | Config |
+| Spread | ≤ `SAE_MAX_SPREAD_BPS` (50bps) | `ObservationPack.spread_bps` |
+| Funding | Long: funding < `SAE_MAX_FUNDING_LONG` (0.30%/8h) | `ObservationPack.funding_rate_8h` |
+| Volatility | Vol z-score ≤ `SAE_MAX_VOL_ZSCORE` (3.0) | `ObservationPack.realized_vol_zscore` |
+| Liq cluster proximity | Nearest cluster > `SAE_MIN_LIQ_DISTANCE_PCT` (0.5%) | `ObservationPack.nearest_liq_cluster_*_pct` |
+| **Swing failure proximity** | `near_swing_failure = True` → −50% size penalty | `WaveSAEInputs.near_swing_failure` |
+| **Near swing failure USD** | Position ≤ `SAE_SWING_FAILURE_REDUCED_PCT` (5%) | When `near_swing_failure = True` |
+| Kill switch | `KILL_SWITCH = False` | Environment variable |
+| Daily drawdown | Portfolio drawdown < `SAE_MAX_DAILY_DD_PCT` (3%) | Live portfolio state |
 
-Provider failover: if primary provider is unavailable, fall back to OpenAI for the same role
-before marking cycle as failed.
+### 8.2 Order Execution
+
+On approval:
+
+1. Write complete `DecisionTrace` entry with all inputs, checks, and approval state
+2. Compute final order parameters (size, price, slippage tolerance)
+3. Submit order to HL with idempotency key = `intent_id`
+4. On fill: write fill details to `DecisionTrace`
+5. On partial fill: reassess remaining quantity before submitting remainder
+
+### 8.3 Kill Switch
+
+`KILL_SWITCH=true` in environment immediately:
+
+- Rejects all new `ExecutionApproval` objects
+- Does NOT close existing positions automatically (separate `EMERGENCY_FLATTEN=true` env var)
+- Logs kill switch activation to audit log with timestamp and PID
+
+
+### 8.4 Heartbeat Monitoring
+
+SAE exposes a `/health` endpoint. A watchdog process restarts SAE if heartbeat exceeds `SAE_HEARTBEAT_TIMEOUT_SECONDS` (30). On restart, SAE reconciles open orders with exchange state before accepting new approvals.
 
 ---
 
-## 5. Runtime Architecture
+## 9. FundManager
 
-### 5.1 Decision Cycle Flow
+FundManager is a deterministic (non-LLM) component that applies portfolio-level constraints to `RiskReview` before emitting `ExecutionApproval`.
 
-```
-1.  INGEST         Market snapshot (HL OHLCV + OB + funding rate + OI)
-                   + IntelliClaw intel feed
-                   + Sentiment/news (with bot-filter weights)
-                   + Onchain signals (vault flows, liq map, whale tracker)
+### 9.1 Portfolio Constraints
 
-2.  OBSERVE        ObserverAgent normalizes all sources → ObservationPack
-                   Tags: regime_tag, staleness, has_critical_gap
-                   → If has_critical_gap == true: emit FLAT, skip cycle
-
-3.  PARTITION      InformationPartitioner assigns asymmetric subsets:
-                   debater_a_subset, debater_b_subset, debater_c_subset
-
-4.  ANALYZE        5 specialist analysts → ResearchPacket
-                   [fundamental, sentiment, news, technical, onchain]
-                   Each analyst receives full ObservationPack
-
-5.  DEBATE         3-debater arena (A=bull-init, B=bear-init, C=neutral)
-                   Each debater initialized with distinct information subset
-                   N rounds cross-examination; claims must cite ObservationPack artifacts
-                   Per-round conviction scores tracked → belief revision deltas computed
-                   → If consensus_strength < threshold: mandate FLAT
-
-6.  ARBITRATE      ArbitratorAgent evaluates claim evidence quality
-                   → ArbitratorVerdict: winner, evidence_quality_score,
-                      arbitrator_confidence, mandate_hold
-                   → If mandate_hold == true: emit FLAT
-
-7.  TRADE          Trader agent synthesizes ResearchPacket + DebateOutcome
-                   + funding_rate_adjusted_leverage
-                   → TradeIntent [action, confidence, notional_pct, rationale]
-
-8.  RISK           3 risk profiles evaluate TradeIntent + ArbitratorVerdict in parallel
-                   → RiskVote × 3 → RiskReview [committee_result, net_size_cap]
-                   Arbitrator confidence is input to risk sizing
-
-9.  FUND MGR       Fund manager applies portfolio constraints
-                   → ExecutionApprovalRequest → ExecutionApproval
-
-10. HITL GATE      Clawvisor HITL ruleset evaluated
-                   → If required: pause for human approval via OpenClaw
-
-11. SAE            Deterministic policy checks (no LLM):
-                   position_limit, portfolio_drawdown, daily_loss_limit,
-                   leverage_cap, liquidity_gate, correlation_gate,
-                   stale_data, funding_rate, event_blackout,
-                   debate_evidence_quality (NEW), liquidation_proximity (NEW)
-                   → ExecutionDecision [allowed, checks_passed/failed, staged_requests]
-
-12. EXECUTE        Executor submits staged requests to HyperLiquid
-                   → FillReport(s)
-
-13. RECONCILE      Fill reconciler updates portfolio state
-
-14. PERSIST        DecisionTrace written atomically to Postgres
-
-15. TREASURY       Treasury manager evaluates realized PnL → conversion if triggered
-
-16. REFLECT        Post-trade jobs (off hot path):
-                   prompt-policy scoring, ablation contribution, optimizer recommendations
-```
-
-
-### 5.2 No-Trade Conditions
-
-The system **must** emit `action: FLAT` when any of the following are true:
-
-- `observation_pack.has_critical_gap == true`
-- `debate_outcome.consensus_strength < config.min_consensus_threshold`
-- `debate_outcome.arbitrator_verdict.mandate_hold == true`
-- `debate_outcome.arbitrator_verdict.evidence_quality_score < config.min_evidence_quality`
-- `risk_review.committee_result == "reject"` with `require_unanimous_for_live == true`
-- `execution_approval.approved == false`
-- `sae_decision.allowed == false`
-- HITL gate open and timeout not expired
-- Any analyst `data_gap: true`
-- Market snapshot age > 60s
-
-
-### 5.3 Time Horizon Policy
-
-LLM-based decisions operate only on **4h candle close or longer** timeframes. Sub-4h signals
-may feed the Observer layer as observations but must never be the primary trigger for a decision
-cycle. The effective latency of LLM reasoning (6h+) makes intraday scalps structurally
-incompatible with this architecture.
-
-
-| Horizon Class | HL Perps Mapping | Cycle Trigger |
+| Constraint | Default | Config Key |
 | :-- | :-- | :-- |
-| Swing | 4h–24h | 4h candle close |
-| Trend | 1d–7d | Daily close |
-| Scalp | <4h | NOT SUPPORTED |
+| Max single position | 10% of portfolio | `FUND_MAX_SINGLE_POSITION_PCT` |
+| Max correlated exposure | 25% of portfolio | `FUND_MAX_CORRELATED_EXPOSURE_PCT` |
+| Max total gross exposure | 200% of portfolio | `FUND_MAX_GROSS_EXPOSURE_PCT` |
+| Max positions simultaneously | 5 | `FUND_MAX_CONCURRENT_POSITIONS` |
+| Min time between trades (same asset) | 4 closed bars | `FUND_MIN_BARS_BETWEEN_TRADES` |
 
+### 9.2 Kelly Governance
 
----
+FundManager receives `TradeIntent.suggested_notional_pct` (Kelly-adjusted) and applies the portfolio constraints above. It may **reduce** but never **increase** `suggested_notional_pct`. The resulting `approved_notional_pct` is written to `ExecutionApproval`.
 
-## 6. Data Contracts
-
-### 6.1 Core Types (common.proto)
-
-```protobuf
-syntax = "proto3";
-package tradingfirm.common;
-
-message Meta {
-  string cycle_id              = 1;
-  string correlation_id        = 2;
-  string strategy_version      = 3;
-  string prompt_policy_version = 4;
-  string market_snapshot_id    = 5;
-  int64  created_at_ms         = 6;
-  string operator_identity     = 7;
-}
-
-enum Direction {
-  DIRECTION_UNSPECIFIED = 0;
-  LONG  = 1;
-  SHORT = 2;
-  FLAT  = 3;
-}
-
-enum TradeMode {
-  TRADE_MODE_UNSPECIFIED = 0;
-  BACKTEST  = 1;
-  PAPER     = 2;
-  LIVE      = 3;
-  RECOVERY  = 4;
-}
-
-enum MarketRegime {
-  REGIME_UNSPECIFIED       = 0;
-  TREND_UP                 = 1;
-  TREND_DOWN               = 2;
-  RANGE                    = 3;
-  EVENT_RISK               = 4;
-  HIGH_VOL                 = 5;
-  ALTSEASON                = 6;
-  BTC_DOMINANCE_RISING     = 7;
-  DERISKING                = 8;
-}
-```
-
-
-### 6.2 Decisioning (decisioning.proto)
-
-```protobuf
-// NEW — ObservationPack (FinArena observer layer)
-message ObservationEntry {
-  string source             = 1;
-  string type               = 2;
-  string content            = 3;
-  double confidence         = 4;
-  int32  staleness_seconds  = 5;
-}
-
-message InformationSubset {
-  string debater_id         = 1;
-  repeated string sources   = 2;
-}
-
-message ObservationPack {
-  tradingfirm.common.Meta       meta               = 1;
-  repeated ObservationEntry     observations       = 2;
-  repeated InformationSubset    subsets            = 3;
-  tradingfirm.common.MarketRegime regime_tag       = 4;
-  bool                          has_critical_gap   = 5;
-  double                        funding_rate_8h    = 6;
-  double                        liq_cluster_distance_pct = 7;
-  double                        btc_dominance_delta = 8;
-}
-
-message AnalystScore {
-  string            analyst       = 1;
-  double            score         = 2;
-  double            confidence    = 3;
-  repeated string   key_points    = 4;
-  repeated string   evidence_refs = 5;
-  bool              data_gap      = 6;
-}
-
-message ResearchPacket {
-  tradingfirm.common.Meta         meta              = 1;
-  string                          asset             = 2;
-  tradingfirm.common.MarketRegime regime            = 3;
-  repeated AnalystScore           analyst_scores    = 4;
-  bool                            has_macro_event   = 5;
-  bool                            has_data_gap      = 6;
-  bool                            has_liq_warning   = 7;
-  double                          volatility_zscore = 8;
-  double                          funding_rate      = 9;
-  string                          observation_pack_id = 10;
-}
-
-// UPDATED — DebateOutcome with belief revision tracking (FinArena)
-message DebaterClaim {
-  string          debater_id      = 1;
-  string          claim           = 2;
-  repeated string evidence_refs   = 3;
-  double          conviction      = 4;
-  double          revision_delta  = 5;
-  string          revised_due_to  = 6;
-}
-
-message DebateRound {
-  uint32                  round  = 1;
-  repeated DebaterClaim   claims = 2;
-}
-
-message ArbitratorVerdict {
-  string  winner                   = 1;  // bull|bear|inconclusive
-  double  evidence_quality_score   = 2;
-  double  arbitrator_confidence    = 3;
-  string  reasoning                = 4;
-  bool    mandate_hold             = 5;
-}
-
-message DebateOutcome {
-  tradingfirm.common.Meta   meta                  = 1;
-  uint32                    panel_size            = 2;
-  repeated DebateRound      rounds                = 3;
-  ArbitratorVerdict         arbitrator_verdict    = 4;
-  double                    net_conviction_delta  = 5;
-  double                    consensus_strength    = 6;
-  repeated string           open_risks            = 7;
-}
-
-message TradeIntent {
-  tradingfirm.common.Meta      meta                         = 1;
-  string                       asset                        = 2;
-  tradingfirm.common.Direction action                       = 3;
-  double                       thesis_strength              = 4;
-  double                       confidence                   = 5;
-  double                       target_notional_pct          = 6;
-  double                       preferred_leverage           = 7;
-  double                       funding_rate_adjusted_leverage = 8;  // NEW
-  uint32                       max_slippage_bps             = 9;
-  string                       time_horizon                 = 10;
-  repeated string              required_conditions          = 11;
-  string                       rationale                    = 12;
-}
-```
-
-
-### 6.3 Risk (risk.proto)
-
-```protobuf
-message RiskVote {
-  tradingfirm.common.Meta meta                      = 1;
-  string                  profile                   = 2;
-  bool                    approve                   = 3;
-  double                  size_cap_pct              = 4;
-  repeated string         objections                = 5;
-  double                  arbitrator_confidence_input = 6;  // NEW
-}
-
-message RiskReview {
-  tradingfirm.common.Meta meta             = 1;
-  repeated RiskVote       votes            = 2;
-  string                  committee_result = 3;
-  double                  net_size_cap_pct = 4;
-  repeated string         unresolved_risks = 5;
-}
-
-message ExecutionApprovalRequest {
-  tradingfirm.common.Meta             meta                   = 1;
-  tradingfirm.decisioning.TradeIntent trade_intent           = 2;
-  RiskReview                          risk_review            = 3;
-  double                              portfolio_exposure_pct = 4;
-  double                              daily_pnl_pct          = 5;
-  double                              drawdown_pct           = 6;
-  double                              correlation_to_book    = 7;
-}
-
-message ExecutionApproval {
-  tradingfirm.common.Meta meta               = 1;
-  bool                    approved           = 2;
-  string                  rejection_reason   = 3;
-  double                  final_notional_pct = 4;
-  double                  final_leverage     = 5;
-  string                  execution_algo     = 6;
-}
-```
-
-
-### 6.4 Execution (execution.proto)
-
-```protobuf
-message ExecutionRequest {
-  tradingfirm.common.Meta      meta             = 1;
-  string                       asset            = 2;
-  tradingfirm.common.Direction action           = 3;
-  double                       notional_usd     = 4;
-  double                       leverage         = 5;
-  string                       algo             = 6;
-  uint32                       max_slippage_bps = 7;
-  bool                         reduce_only      = 8;
-  string                       tif              = 9;
-}
-
-message ExecutionDecision {
-  tradingfirm.common.Meta   meta             = 1;
-  bool                      allowed          = 2;
-  string                    policy_version   = 3;
-  repeated string           checks_passed    = 4;
-  repeated string           checks_failed    = 5;
-  repeated ExecutionRequest staged_requests  = 6;
-  string                    rejection_reason = 7;
-}
-
-message FillReport {
-  tradingfirm.common.Meta meta           = 1;
-  string                  venue_order_id = 2;
-  string                  asset          = 3;
-  double                  filled_qty     = 4;
-  double                  avg_price      = 5;
-  double                  fees_usd       = 6;
-  double                  slippage_bps   = 7;
-  string                  status         = 8;
-}
-```
-
-
-### 6.5 DecisionTrace (JSON — stored in Postgres)
-
-```json
-{
-  "cycle_id": "cyc_01JQ...",
-  "asset": "BTC-PERP",
-  "mode": "paper",
-  "market_snapshot_id": "ms_01JQ...",
-  "observation_pack_id": "obs_01JQ...",
-  "strategy_version": "paper/v17",
-  "prompt_policy_versions": {
-    "observer":          "observer/v1",
-    "fundamental":       "fundamental/v4",
-    "sentiment":         "sentiment/v3",
-    "news":              "news/v5",
-    "technical":         "technical/v6",
-    "onchain":           "onchain/v2",
-    "debater_a":         "debater-a/v1",
-    "debater_b":         "debater-b/v1",
-    "debater_c":         "debater-c/v1",
-    "arbitrator":        "arbitrator/v1",
-    "trader":            "trader/v9",
-    "risk_aggressive":   "risk-aggressive/v2",
-    "risk_neutral":      "risk-neutral/v3",
-    "risk_conservative": "risk-conservative/v2",
-    "fund_manager":      "fund-manager/v4"
-  },
-  "observation_pack":       {},
-  "research_packet":        {},
-  "debate_outcome":         {},
-  "trade_intent":           {},
-  "risk_review":            {},
-  "execution_approval_req": {},
-  "execution_approval":     {},
-  "hitl_gate": {
-    "required": false,
-    "approved_by": null,
-    "approved_at_ms": null
-  },
-  "sae_decision":  {},
-  "fill_reports":  [],
-  "treasury_event": {
-    "triggered": false,
-    "btc_converted_usd": 0,
-    "stable_received_usd": 0
-  },
-  "final_state": {
-    "result": "filled|no_fill|rejected_sae|rejected_risk|rejected_hitl|flat|mandate_hold",
-    "halt_flags": [],
-    "total_latency_ms": 2140,
-    "agent_latencies_ms": {}
-  }
-}
-```
-
-
-### 6.6 Debate Panel Configuration (JSON)
-
-```json
-// config/debate-panels/panel_3_default.json
-{
-  "panel_id": "panel_3_default",
-  "panel_size": 3,
-  "debate_rounds": 2,
-  "debaters": [
-    {
-      "id": "debater_a",
-      "initial_stance": "bullish",
-      "system_prompt_override": null,
-      "information_subset_priority": ["hl_ohlcv", "onchain", "sentiment"]
-    },
-    {
-      "id": "debater_b",
-      "initial_stance": "bearish",
-      "system_prompt_override": "You are a skeptical short-seller. Your prior is that this asset will revert. Argue against the long. Weight funding rate carry cost and liquidation risk heavily.",
-      "information_subset_priority": ["fundamental", "news", "onchain"]
-    },
-    {
-      "id": "debater_c",
-      "initial_stance": "neutral",
-      "system_prompt_override": null,
-      "information_subset_priority": ["hl_ohlcv", "fundamental", "news", "sentiment"]
-    }
-  ]
-}
-```
-
-
-### 6.7 Clawvisor HITL Ruleset (JSON)
-
-```json
-{
-  "ruleset_id": "hitl_default_v1",
-  "enabled": true,
-  "rules": [
-    {
-      "name": "live_always_requires_human",
-      "when": { "mode": ["live"] },
-      "require_approval": true,
-      "timeout_seconds": 300,
-      "on_timeout": "reject"
-    },
-    {
-      "name": "large_notional",
-      "when": { "notional_pct_gte": 0.05 },
-      "require_approval": true,
-      "timeout_seconds": 120,
-      "on_timeout": "reject"
-    },
-    {
-      "name": "risk_committee_not_unanimous",
-      "when": { "committee_result": ["approve_with_modification", "reject"] },
-      "require_approval": true,
-      "timeout_seconds": 180,
-      "on_timeout": "reject"
-    },
-    {
-      "name": "strategy_promotion",
-      "when": { "event_type": ["strategy_version_change", "prompt_policy_promotion"] },
-      "require_approval": true,
-      "timeout_seconds": 3600,
-      "on_timeout": "reject"
-    },
-    {
-      "name": "treasury_large_conversion",
-      "when": { "treasury_conversion_usd_gte": 10000 },
-      "require_approval": true,
-      "timeout_seconds": 600,
-      "on_timeout": "reject"
-    }
-  ]
-}
-```
-
+SAE then applies its own independent position limit check on `approved_notional_pct`. Neither FundManager nor SAE can increase the size set by `KellySizingService`.
 
 ---
 
-## 7. Safety Architecture
+## 10. DecisionTrace and Audit Log
 
-### 7.1 Invariants
+Every trading decision — including rejections — is written to an append-only `DecisionTrace` before the action is taken. This provides full post-hoc auditability.
 
-1. No `ExecutionRequest` reaches an Executor without a passing `ExecutionDecision` from SAE
-2. No `ExecutionDecision` issued without an `ExecutionApproval` from Fund Manager
-3. No live-mode cycle completes without HITL approval when ruleset requires it
-4. All DecisionTrace artifacts written atomically before fill reconciliation
-5. SAE has no LLM dependency — deterministic rule engine only
-6. Strategy and prompt-policy changes require HITL approval before live effect
-7. Prompt-policy versions are immutable once promoted
-8. Treasury module cannot open leveraged positions; spot conversion only
-9. ArbitratorAgent `mandate_hold == true` is terminal — no downstream agent may override it
-10. Debater `initial_stance: bearish` system prompt may not be removed without SPEC.md update
+### 10.1 DecisionTrace Fields
 
-### 7.2 SAE Policy Checks
+```python
+@dataclass
+class DecisionTrace:
+    trace_id: str                       # UUID
+    timestamp_utc: datetime
+    asset: str
+    cycle_id: str                       # Groups all records from one decision cycle
 
-| Check | Default Threshold | Configurable |
-| :-- | :-- | :-- |
-| `position_limit` | Max notional per asset ≤ 15% | Yes |
-| `portfolio_drawdown` | Drawdown ≤ 8% | Yes |
-| `daily_loss_limit` | Daily PnL ≤ -3% | Yes |
-| `leverage_cap` | ≤ 3× paper, ≤ 2× live | Yes |
-| `liquidity_gate` | 24h volume ≥ 10× trade notional | Yes |
-| `correlation_gate` | Correlation to book ≤ 0.7 | Yes |
-| `stale_data` | Snapshot age ≤ 60s | Yes |
-| `funding_rate` | Funding ≤ 0.1% per 8h | Yes |
-| `event_blackout` | No active macro event flag | Yes |
-| `debate_evidence_quality` | evidence_quality_score ≥ 0.55 AND arbitrator_confidence ≥ 0.50 | Yes |
-| `liquidation_proximity` | liq_cluster_distance_pct > 1.5% (reduce 50% if 1.5–3%, reject if <1.5%) | Yes |
+    # Inputs
+    observation_pack: ObservationPack   # Full snapshot at decision time
+    debate_result: DebateResult
+    trade_intent: TradeIntent
+    risk_review: RiskReview
+    execution_approval: ExecutionApproval
 
+    # Kelly audit
+    kelly_inputs: KellyInputs           # win_prob, payoff_ratio, OOS trade count, source bucket
+    kelly_output: KellyOutput           # raw_fraction, adjusted_fraction, penalties applied
 
----
+    # Wave audit
+    wave_analysis: dict                 # output.observation_dict from WaveAdapter
+    wave_phase: str
+    wave_confluence_score: float
+    near_swing_failure: bool
 
-## 8. Orchestrator API
+    # SAE decision
+    sae_checks_passed: List[str]
+    sae_checks_failed: List[str]
+    sae_decision: str                   # "APPROVED" | "REJECTED" | "KILL_SWITCH"
+    sae_rejection_reason: Optional[str]
 
-### 8.1 Endpoints
-
-| Method | Path | Description |
-| :-- | :-- | :-- |
-| `POST` | `/cycles/trigger` | Trigger decision cycle |
-| `GET` | `/cycles/:id` | Cycle status |
-| `GET` | `/traces/:id` | Full DecisionTrace |
-| `GET` | `/traces` | List traces (paginated, filterable) |
-| `POST` | `/control/halt` | Emergency halt |
-| `POST` | `/control/resume` | Resume after halt |
-| `POST` | `/control/emergency-close` | Immediate FLAT all positions |
-| `POST` | `/governance/hitl-rules` | Update HITL ruleset |
-| `POST` | `/governance/hitl-rules/:rule/approve` | Human HITL approval |
-| `POST` | `/governance/prompt-policies/promote` | Promote prompt-policy version |
-| `POST` | `/governance/strategies/promote` | Promote strategy version |
-| `POST` | `/sae/policies/reload` | Hot-reload SAE policy |
-| `GET` | `/status` | System health |
-| `GET` | `/metrics` | Prometheus scrape |
-| `GET` | `/treasury/status` | Treasury state |
-
-
----
-
-## 9. Treasury Management
-
-### 9.1 Conversion Triggers
-
-| Trigger | Default | Configurable |
-| :-- | :-- | :-- |
-| Realized PnL threshold | +5% portfolio gain | Yes |
-| Time-based | Every 7 days | Yes |
-| Volatility spike | BTC 24h vol > 2σ | Yes |
-| Manual | `POST /treasury/convert` via OpenClaw | Always |
-
-### 9.2 Configuration
-
-```json
-{
-  "policy_id": "treasury_default_v1",
-  "target_stable_pct": 30,
-  "min_conversion_usd": 500,
-  "hitl_threshold_usd": 10000,
-  "conversion_algo": "TWAP",
-  "conversion_window_minutes": 15,
-  "triggers": {
-    "pnl_threshold_pct": 5.0,
-    "time_interval_days": 7,
-    "volatility_zscore_threshold": 2.0
-  }
-}
+    # Order (if approved)
+    order_id: Optional[str]
+    order_params: Optional[dict]
+    fill_price: Optional[float]
+    fill_size: Optional[float]
+    fill_timestamp_utc: Optional[datetime]
 ```
 
 
----
+### 10.2 Storage
 
-## 10. Storage Schema
+`DecisionTrace` records are:
 
-### 10.1 Key Postgres Tables
-
-| Table | Primary Key | Purpose |
-| :-- | :-- | :-- |
-| `decision_traces` | `cycle_id` | Full DecisionTrace JSON |
-| `observation_packs` | `observation_pack_id` | ObservationPack artifacts |
-| `analyst_reports` | `(cycle_id, analyst)` | Analyst outputs |
-| `debate_rounds` | `(cycle_id, round)` | Per-round debater claims and conviction deltas |
-| `arbitrator_verdicts` | `cycle_id` | ArbitratorVerdict records |
-| `risk_reviews` | `cycle_id` | Committee results |
-| `execution_decisions` | `cycle_id` | SAE decisions |
-| `fills` | `venue_order_id` | Fill records |
-| `prompt_policies` | `(role, version)` | Versioned prompt templates |
-| `prompt_history` | `(cycle_id, role)` | Rendered prompts per cycle |
-| `strategy_versions` | `(name, version)` | Strategy plugin registry |
-| `hitl_rulesets` | `ruleset_id` | HITL rule definitions |
-| `human_approvals` | `(cycle_id, rule_name)` | Human approval records |
-| `governance_events` | `event_id` | All governance actions |
-| `recovery_state` | `service_name` | Last known safe state |
-| `ablation_results` | `(run_id, variant)` | Ablation outputs |
-| `treasury_events` | `event_id` | Conversion events |
-| `optimizer_runs` | `run_id` | Optimizer recommendations |
-
+- Written to a local append-only SQLite database (`data/traces/traces.db`) in real-time
+- Asynchronously replicated to object storage (S3-compatible) for durability
+- Never mutated after write — corrections are new records with `correction_of_trace_id` field
+- Retained for minimum 365 days
 
 ---
 
-## 11. Observability
+## 11. Treasury Management System
 
-### 11.1 Metric Categories
+The treasury system manages BTC → stablecoin conversion to reduce mark-to-market volatility and lock in mining revenue.
 
-**Trading:** cumulative return, annualized return, Sharpe, max drawdown, hit rate, turnover,
-exposure concentration, avg holding period, slippage bps
+### 11.1 Conversion Rules
 
-**Process:** cycle latency P50/P95/P99, analyst latency per role, debate duration, debate rounds,
-arena cross-examination latency, arbitrator confidence distribution, veto frequency, no-trade
-frequency, mandate_hold frequency, HITL approval time
-
-**Safety:** SAE rejection per check (including `debate_evidence_quality` and
-`liquidation_proximity`), stale-data incidents, risk disagreement rate, human override count,
-recovery entries, prompt-policy rollbacks, optimizer adoption rate
-
-### 11.2 Alerting Thresholds
-
-| Alert | Condition |
+| Trigger | Action |
 | :-- | :-- |
-| `trading.drawdown.critical` | Portfolio drawdown > 6% |
-| `safety.stale_data` | Snapshot age > 90s in live mode |
-| `safety.sae_rejection_spike` | SAE rejection rate > 30% over 10 cycles |
-| `debate.mandate_hold_spike` | mandate_hold rate > 40% over 20 cycles |
-| `process.cycle_latency` | Cycle P95 > 8s |
-| `infra.agent_service_down` | Agent health check fails > 30s |
-| `treasury.conversion_failed` | Conversion not filled within 30 min |
+| BTC price ≥ rolling 30d high × `TREASURY_TAKE_PROFIT_PCT` (1.05) | Convert `TREASURY_CONVERT_PCT` (20%) of BTC balance to USDC |
+| Portfolio drawdown ≥ `TREASURY_DRAWDOWN_HEDGE_PCT` (5%) | Convert `TREASURY_DRAWDOWN_CONVERT_PCT` (30%) of BTC to USDC |
+| Weekly rebalance | Rebalance to `TREASURY_TARGET_BTC_PCT` (60%) BTC / 40% stablecoin |
 
+### 11.2 Constraints
 
----
-
-## 12. Autonomous AI Optimization Agent
-
-The `optimizer_agent` operates entirely off the hot path. It:
-
-- Analyzes `DecisionTrace`, `debate_rounds`, `arbitrator_verdicts`, and `ablation_results`
-- Identifies patterns correlating prompt-policy versions and debate configurations with improved
-metrics (paying special attention to `evidence_quality_score` and `arbitrator_confidence`)
-- Generates candidate prompt-policy versions with `status: candidate`
-- Scores candidates via `prompt_policy_scorer.py` evaluation harness
-- Posts recommendations to governance queue for human review via OpenClaw
-- **Never** auto-promotes — all promotions require human HITL approval
+- All conversions require 2-of-2 signature (operator + automated system)
+- Maximum single conversion: `TREASURY_MAX_SINGLE_CONVERT_PCT` (25% of BTC balance)
+- No conversions during active open positions
+- Full conversion audit log written to separate `TreasuryTrace` table
 
 ---
 
-## 13. Ablation Suite
+## 12. Phased Build Plan
 
-The `ablation_runner.py` evaluates these variants (added to `ablation_results` table):
+### Phase A — Foundation (Current)
+
+**Exit criteria:** Paper trading with live data for 30 days, Sharpe > 0.8, max drawdown < 8%, zero SAE bypass incidents.
+
+Deliverables:
+
+- [x] `HyperliquidFeed` — REST/WS feed with reconciliation
+- [x] `WaveDetector` + `WaveAdapter` — wave structure detection (§14.4)
+- [x] `KellySizingService` — fractional Kelly with OOS gating (§14.2)
+- [x] `RegimeMapper` — QZRegime → MarketRegime (§14.3)
+- [ ] `ObserverAgent` — assembles `ObservationPack`
+- [ ] Debate agent framework — BullAgent, BearAgent, NeutralAgent
+- [ ] `TraderAgent`
+- [ ] `RiskCommitteeAgent`
+- [ ] `FundManager`
+- [ ] SAE with full pre-execution checks
+- [ ] `DecisionTrace` storage and audit
+- [ ] Paper trading harness
+
+**Phase A known TODOs:**
+
+- `wave_detector.py`: `_filter_liq_wicks()` logs spike events but does not mutate frozen `HLBar` objects. Actual wick-clipping requires mutable bar types. See comment in source (`# TODO(phase-b): accept mutable bars and apply actual clipping`).
+- `KellySizingService`: OOS bucket statistics are manually seeded for Phase A. Phase B wires `ablation_runner.py` output directly.
 
 
-| Variant | What Is Disabled |
-| :-- | :-- |
-| `single_agent` | All debate, risk committee, observer |
-| `no_observer` | ObserverAgent bypassed; raw data direct to analysts |
-| `no_debate` | Debate bypassed; trader uses ResearchPacket directly |
-| `2_debater_vs_3_debater` | Panel reduced to A+B only |
-| `no_arbitrator` | ArbitratorAgent bypassed; facilitator summary only |
-| `no_risk_committee` | Risk review bypassed |
-| `no_sae` | SAE bypassed (paper only — never live) |
-| `no_fund_manager` | Fund manager approval bypassed |
-| `homogeneous_models` | All roles use same LLM provider (monoculture baseline) |
-| `no_treasury` | Treasury evaluation bypassed |
-| `full_system` | All stages active |
+### Phase B — Live Trading (Planned)
 
+**Exit criteria:** Live trading with real capital for 60 days at 10% max position size. Sharpe > 1.0 live vs paper. All TODOs from Phase A closed.
+
+Deliverables:
+
+- Mutable bar types for liq spike wick clipping
+- `ablation_runner.py` → `KellySizingService` automatic OOS stat pipeline
+- Treasury management system
+- Multi-asset support (ETH-PERP, SOL-PERP)
+- Correlation matrix for FundManager
+- Live monitoring dashboard
+
+
+### Phase C — Scale (Future)
+
+- Increased position limits with extended track record
+- Additional strategy families (mean reversion, basis)
+- Automated regime-adaptive parameter tuning
+- Cross-venue arbitrage monitoring
+
+---
+
+## 13. Configuration and Environment
+
+All configuration is loaded from environment variables. No secrets in source. Rotate keys via secret manager, not by editing `.env`.
+
+### 13.1 Required Environment Variables
+
+```bash
+# HyperLiquid
+HL_API_KEY=
+HL_API_SECRET=
+HL_WALLET_ADDRESS=
+HL_TESTNET=true                         # Set false for live trading
+
+# Safety limits
+SAE_MAX_NOTIONAL_PCT=10
+SAE_MAX_NOTIONAL_USD=50000
+SAE_MAX_LEVERAGE=5
+SAE_MAX_SPREAD_BPS=50
+SAE_MAX_FUNDING_LONG=0.0030            # 0.30% per 8h
+SAE_MAX_VOL_ZSCORE=3.0
+SAE_MIN_LIQ_DISTANCE_PCT=0.5
+SAE_MAX_DAILY_DD_PCT=3.0
+SAE_HEARTBEAT_TIMEOUT_SECONDS=30
+KILL_SWITCH=false
+EMERGENCY_FLATTEN=false
+
+# Fund manager
+FUND_MAX_SINGLE_POSITION_PCT=10
+FUND_MAX_CORRELATED_EXPOSURE_PCT=25
+FUND_MAX_GROSS_EXPOSURE_PCT=200
+FUND_MAX_CONCURRENT_POSITIONS=5
+FUND_MIN_BARS_BETWEEN_TRADES=4
+
+# Kelly sizing
+KELLY_MAX_NOTIONAL_PCT=10
+KELLY_MIN_NOTIONAL_PCT=0.5
+KELLY_MAX_FRACTION=0.25                # Full Kelly cap before adjustments
+
+# Treasury
+TREASURY_TAKE_PROFIT_PCT=1.05
+TREASURY_CONVERT_PCT=0.20
+TREASURY_DRAWDOWN_HEDGE_PCT=0.05
+TREASURY_DRAWDOWN_CONVERT_PCT=0.30
+TREASURY_TARGET_BTC_PCT=0.60
+TREASURY_MAX_SINGLE_CONVERT_PCT=0.25
+
+# Infra
+LOG_LEVEL=INFO
+TRACE_DB_PATH=data/traces/traces.db
+S3_TRACE_BUCKET=
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-opus-4-5
+LLM_MAX_TOKENS=4096
+```
+
+
+### 13.2 API Key Security
+
+- Trading keys: minimum permissions — place/cancel orders, read positions only
+- Read-only keys: separate key for data feeds, monitoring dashboards
+- Never log API keys; mask in all trace output
+- Rotate on any suspected compromise; KILL_SWITCH immediately on rotation
 
 ---
 
 ## 14. Quant Layer — `apps/quant/`
 
-The `apps/quant/` module provides deterministic, quantitative signal pre-processing that runs before LLM agents and feeds structured evidence into `ObservationPack`. It never makes trading decisions; it informs them.
+The `apps/quant/` module provides deterministic, quantitative signal pre-processing that runs before LLM agents and feeds structured evidence into `ObservationPack`. It has zero LLM calls, zero network calls (feeds are injected), and zero side effects.
 
-**Governance invariant:** No quant module output is ever executable trading authority on its own. All quant outputs are advisory inputs to LLM agents or penalty inputs to deterministic safety checks. The decision chain — debate → trader → risk committee → fund manager → SAE → executor — remains intact.
+**Governance invariant:** No quant module output is ever executable trading authority on its own. All outputs are advisory inputs to LLM agents or penalty inputs to deterministic safety checks. The decision chain — debate → trader → risk committee → fund manager → SAE → executor — remains intact.
 
-***
+---
 
 ### 14.1 HyperLiquid Feed Adapter
 
@@ -950,7 +616,7 @@ The `apps/quant/` module provides deterministic, quantitative signal pre-process
 - Bootstrap via REST before any WS subscriptions
 - Reconcile every 30 seconds to detect sequence gaps and drift
 - Set `has_data_gap = True` if any source exceeds 60 seconds stale
-- SAE receives stale flag and must fail-close on `has_data_gap`
+- SAE must fail-close on `has_data_gap = True`
 
 **Key normalizations for HL perps:**
 
@@ -961,7 +627,7 @@ The `apps/quant/` module provides deterministic, quantitative signal pre-process
 
 **Adapted from:** [Quant-Zero](https://github.com/marcohwlam/quant-zero) — closed-bar signal architecture and feed bootstrap pattern.
 
-***
+---
 
 ### 14.2 Kelly Sizing Service
 
@@ -969,7 +635,7 @@ The `apps/quant/` module provides deterministic, quantitative signal pre-process
 
 `KellySizingService` computes a fractional Kelly position size and writes a fully auditable `KellyOutput` into `TradeIntent` and `DecisionTrace`.
 
-**Critical constraint:** `win_prob` and `payoff_ratio` MUST come from validated out-of-sample historical estimates from `apps/jobs/ablation_runner.py` — never from raw LLM confidence scores. A minimum of 30 OOS trades is required before Kelly sizing is active for any `(strategy, asset, regime, direction)` bucket.
+**Critical constraint:** `win_prob` and `payoff_ratio` MUST come from validated out-of-sample historical estimates from `apps/jobs/ablation_runner.py` — never from raw LLM confidence scores. A minimum of 30 OOS trades is required before Kelly sizing is active for any `(strategy, asset, regime, direction)` bucket. If the bucket has < 30 OOS trades, emit FLAT.
 
 **Penalty adjustments applied sequentially:**
 
@@ -978,23 +644,23 @@ The `apps/quant/` module provides deterministic, quantitative signal pre-process
 | :-- | :-- |
 | `signal_quality < 0.60` | −50% |
 | Funding rate > 0.10% per 8h on LONG | −25% |
-| Funding rate > 0.20% per 8h on LONG | −50% |
+| Funding rate > 0.20% per 8h on LONG | −50% (replaces −25%) |
 | Realized vol z-score > 2.0 | −50% |
 | Nearest liq cluster within 1.5% | −50% |
 | Adjusted fraction < `KELLY_MIN_NOTIONAL_PCT` (0.5%) | Emit FLAT |
-| Hard cap at `KELLY_MAX_NOTIONAL_PCT` (10%) | Always enforced |
+| Result > `KELLY_MAX_NOTIONAL_PCT` (10%) | Hard cap at 10% |
 
 **Governance:** `kelly_inputs` and `kelly_output` are written to `TradeIntent` and persisted in `DecisionTrace`. `FundManager` may reduce `suggested_notional_pct` but must never increase it. SAE enforces its own `position_limit` independently.
 
 **Adapted from:** [Quant-Zero](https://github.com/marcohwlam/quant-zero) — fractional Kelly framework and OOS validation requirements.
 
-***
+---
 
 ### 14.3 Regime Mapper
 
 **Source:** `apps/quant/regimes/regime_mapper.py`
 
-`RegimeMapper` bridges Quant-Zero fine-grained regime labels (`QZRegime`) to the canonical `MarketRegime` enum from `proto/common.proto`.
+`RegimeMapper` bridges fine-grained `QZRegime` labels to the canonical `MarketRegime` enum from `proto/common.proto`.
 
 **Design principle:** `MarketRegime` is an operational (risk-first) enum, not a descriptive one. High-volatility conditions override directional labels because risk control dominates direction in HL perp trading.
 
@@ -1016,250 +682,127 @@ The `apps/quant/` module provides deterministic, quantitative signal pre-process
 
 **Dual-field design:** Both `qz_regime` (fine-grained) and `market_regime` (canonical operational) are written to `ObservationPack`. Agents reason with richer context; SAE and FundManager operate on the canonical enum only.
 
-***
+---
 
 ### 14.4 Wave Structure Detector
 
-**Source:** `apps/quant/signals/wave_detector.py`, `apps/quant/signals/wave_adapter.py`
+**Sources:** `apps/quant/signals/wave_detector.py`, `apps/quant/signals/wave_adapter.py`
 
-**Adapted from:** [WaveEdge](https://github.com/koobraelac/wavedge) — wave structure detection algorithm, liquidation-proximity swing detection, multi-timeframe divergence detection concepts. Re-implemented as a deterministic, closed-bar-only Python module with no LLM calls, no network calls, and no side effects.
+**Adapted from:** [WaveEdge](https://github.com/koobraelac/wavedge) — wave structure detection algorithm, liquidation-proximity swing detection, and multi-timeframe divergence detection concepts. Re-implemented as a deterministic, closed-bar-only Python module with no LLM calls, no network calls, and no side effects.
 
-`WaveDetector` implements deterministic multi-timeframe wave structure classification on HL perp closed bars. `WaveAdapter` bridges detector output to `ObservationPack`, regime mapping, and SAE enrichment.
+`WaveDetector` implements deterministic multi-timeframe wave structure classification on HL perp closed bars. `WaveAdapter` bridges detector output to `ObservationPack`, regime mapping, and SAE enrichment inputs.
 
 **Wave phase classifications:**
 
 
 | Phase | Meaning |
 | :-- | :-- |
-| `IMPULSIVE_UP` | HH + HL sequence, ≥3 legs, no deep retracement |
-| `IMPULSIVE_DOWN` | LL + LH sequence, ≥3 legs, no deep retracement |
+| `IMPULSIVE_UP` | HH + HL sequence, ≥3 confirmed legs, no deep retracement |
+| `IMPULSIVE_DOWN` | LL + LH sequence, ≥3 confirmed legs, no deep retracement |
 | `CORRECTIVE_ABC_UP` | Bounded corrective structure pushing price up |
 | `CORRECTIVE_ABC_DOWN` | Bounded corrective structure pushing price down |
-| `COMPLEX_CORRECTION` | Multi-leg WXY or similar overlapping correction |
-| `TRANSITION` | Structural break — highest uncertainty state |
+| `COMPLEX_CORRECTION` | Multi-leg WXY or similar overlapping correction (>6 swings) |
+| `TRANSITION` | Structural break — swing sequence violates all patterns — highest uncertainty |
 | `UNKNOWN` | Insufficient bars for classification |
-
-**Key outputs written to `ObservationPack`:**
-
-- `wave_phase`, `wave_phase_confidence` , `confluence_score`
-- `nearest_swing_high`, `nearest_swing_low`, distance percentages
-- `has_bearish_divergence`, `has_bullish_divergence` (RSI-based, swing-point-gated only)
-- `qz_regime_from_wave`, `market_regime_from_wave` (via RegimeMapper)
 
 **Wave → QZRegime mapping:**
 
 
-| WavePhase | Confluence | QZRegime |
+| WavePhase | Confluence ≥ 0.67 | QZRegime |
 | :-- | :-- | :-- |
-| `IMPULSIVE_UP` | High | `trend_up_low_vol` |
-| `IMPULSIVE_UP` | Low | `trend_up_high_vol` |
-| `IMPULSIVE_DOWN` | High | `trend_down_low_vol` |
-| `IMPULSIVE_DOWN` | Low | `trend_down_high_vol` |
-| `CORRECTIVE_ABC_*` | Either | `range_low_vol` / `range_high_vol` |
+| `IMPULSIVE_UP` | Yes | `trend_up_low_vol` |
+| `IMPULSIVE_UP` | No | `trend_up_high_vol` |
+| `IMPULSIVE_DOWN` | Yes | `trend_down_low_vol` |
+| `IMPULSIVE_DOWN` | No | `trend_down_high_vol` |
+| `CORRECTIVE_ABC_UP/DOWN` | Yes | `range_low_vol` |
+| `CORRECTIVE_ABC_UP/DOWN` | No | `range_high_vol` |
 | `COMPLEX_CORRECTION` | Either | `range_high_vol` |
 | `TRANSITION` | Either | `event_breakout` |
+| `UNKNOWN` | Either | `unknown` |
 
-**SAE enrichment:** `WaveSAEInputs.near_swing_failure` is set when current price is within 0.8% of the nearest confirmed swing low (for longs) or high (for shorts). SAE applies a 50% size penalty — not a veto.
+**Key outputs written to `ObservationPack.quantitative_baseline["wave"]`:**
+
+- `wave_phase` — string value of `WavePhase` enum
+- `wave_phase_confidence` — [0,1] composite confidence
+- `confluence_score` — [0,1] cross-timeframe agreement
+- `timeframe_phases` — per-TF phase dict (e.g. `{"4h": "IMPULSIVE_UP", "1h": "CORRECTIVE_ABC_DOWN"}`)
+- `nearest_swing_high` / `nearest_swing_low` — price of nearest confirmed swing
+- `nearest_swing_high_distance_pct` / `nearest_swing_low_distance_pct` — % distance from mid
+- `has_bearish_divergence` / `has_bullish_divergence` — RSI divergence at swing points only
+- `qz_regime_from_wave` / `market_regime_from_wave` — regime from wave analysis
+
+**Also written directly to `ObservationPack`:**
+
+- `obs_pack.swing_high` = `output.wave_result.nearest_swing_high` (typed `SwingLevel`)
+- `obs_pack.swing_low` = `output.wave_result.nearest_swing_low` (typed `SwingLevel`)
+
+**SAE enrichment (`WaveSAEInputs`):**
+
+- `near_swing_failure: bool` — True when price is within 0.8% of nearest confirmed swing low (LONG) or high (SHORT)
+- `swing_failure_price: Optional[float]`
+- `swing_failure_distance_pct: Optional[float]`
+- `wave_confluence_score: float`
+
+SAE applies a 50% size reduction when `near_swing_failure = True`. This is a penalty, not a veto.
 
 **Critical caveats:**
 
-- Wave labeling is inherently ambiguous — this produces the most statistically probable interpretation, not ground truth. Treat `wave_phase` as strong advisory evidence, not trading authority.
-- Run on **closed bars only** — intrabar computation produces false state transitions.
-- HL liquidation spike wicks must be pre-filtered before wave detection. `_filter_liq_wicks()` flags spikes in logging; actual wick-clipping on mutable bar objects is a **Phase B TODO** (`apps/quant/signals/wave_detector.py`, line ~200).
+- Wave labeling is inherently ambiguous. This module returns the most statistically probable structural interpretation — not ground truth. Treat `wave_phase` as strong advisory evidence, not trading authority.
+- Run on **closed bars only**. Intrabar computation produces false state transitions at bar boundaries.
+- HL liquidation spike wicks must be pre-filtered before wave detection runs. `_filter_liq_wicks()` currently flags spikes in logging but does not mutate frozen `HLBar` dataclass objects. **Phase B TODO:** accept mutable bar types and apply actual wick clipping.
 
-***
+---
 
-### 14.5 Integration Points Summary
-
-| Quant Component | Consumes | Produces | Used By |
-| :-- | :-- | :-- | :-- |
-| `HyperliquidFeed` | HL REST/WS, IntelliClaw | `HLMarketContext` | `ObserverAgent`, jobs |
-| `WaveDetector` + `WaveAdapter` | `HLMarketContext.bars_*` | `WaveAnalysisResult`, `WaveSAEInputs` | `ObserverAgent`, SAE |
-| `QZRegimeClassifier` | `HLMarketContext`, wave phase | `RegimeMappingResult` | `ObserverAgent` |
-| `KellySizingService` | OOS stats, signal quality, market context | `KellyOutput` | `TraderAgent`, `FundManager` |
-
-
-***
-
-### 14.6 ObserverAgent Integration
+### 14.5 ObserverAgent Integration
 
 ```python
-# Minimal ObserverAgent wiring — apps/agents/observer/observer_agent.py
+# Canonical wiring in apps/agents/observer/observer_agent.py
 
 from apps.quant.signals.wave_adapter import analyze_wave
 
 output = analyze_wave(
     asset=ctx.asset,
-    bars_by_tf={"4h": ctx.bars_4h, "1h": ctx.bars_1h, "15m": ctx.bars_15m},
+    bars_by_tf={
+        "4h": ctx.bars_4h,
+        "1h": ctx.bars_1h,
+        "15m": ctx.bars_15m,
+    },
     current_mid_price=ctx.mid_price,
-    direction_for_sae="LONG",  # from pending TradeIntent direction
+    direction_for_sae="LONG",  # pass pending TradeIntent direction if known
 )
 
+# Inject into ObservationPack
 obs_pack.quantitative_baseline["wave"] = output.observation_dict
 obs_pack.swing_high = output.wave_result.nearest_swing_high
 obs_pack.swing_low  = output.wave_result.nearest_swing_low
-# SAE receives output.sae_inputs.near_swing_failure as penalty input
+
+# SAE receives separately — not via ObservationPack
+sae_wave_inputs = output.sae_inputs
 ```
 
-***
-
-## 15. Quant Layer — Signal Validation and Sizing
-
-The `apps/quant/` module provides deterministic, quantitative signal pre-processing
-that runs before LLM agents and feeds structured evidence into `ObservationPack`.
-It never makes trading decisions; it informs them.
-
-### 15.1 HyperLiquid Feed Adapter
-
-**Source:** `apps/quant/feeds/hyperliquid_feed.py`
-
-`HyperliquidFeed` produces `HLMarketContext` objects consumed by `ObserverAgent`,
-`QZRegimeClassifier`, and `KellySizingService`. It operates snapshot-first (REST
-bootstrap) with WebSocket delta updates and periodic REST reconciliation.
-
-**Architecture principles:**
-- Bootstrap via REST before any WS subscriptions
-- Reconcile every 30 seconds to detect sequence gaps and drift
-- Set `has_data_gap = true` if any source exceeds 60 seconds stale
-- SAE receives stale flag and must fail-close on `has_data_gap`
-
-**Key normalizations for HL perps:**
-- Funding rate normalized to 8-hour equivalent regardless of venue cadence
-- `depth_10bps_usd` computed as order book depth within ±10bps of mid
-- Liquidation clusters expressed as signed distance percentage from current mid
-- Bars are closed-bar only — current incomplete bar is never included
-
-**Source analysis:** Adapted from [Quant-Zero](https://github.com/marcohwlam/quant-zero)
-and [WaveEdge](https://github.com/koobraelac/wavedge). Quant-Zero provided the
-closed-bar signal architecture and Kelly sizing framework. WaveEdge provided the
-wave structure detection algorithm, liquidation-proximity swing detection, and
-multi-timeframe divergence detection concepts.
-
-### 15.2 Kelly Sizing Service
-
-**Source:** `apps/quant/sizing/kelly_sizing_service.py`
-
-`KellySizingService` computes a fractional Kelly position size and writes a fully
-auditable `KellyOutput` into `TradeIntent` and `DecisionTrace`.
-
-**Critical constraint:** `win_prob` and `payoff_ratio` MUST come from validated
-out-of-sample historical estimates from `apps/jobs/ablation_runner.py` — never
-from raw LLM confidence scores. A minimum of 30 OOS trades is required before
-Kelly sizing is active for any (strategy, asset, regime, direction) bucket.
-
-**Penalty adjustments applied sequentially:**
-- `signal_quality < 0.60` → 50% size reduction
-- Funding rate > 0.10% per 8h on LONG → 25% reduction
-- Funding rate > 0.20% per 8h on LONG → 50% reduction
-- Realized vol z-score > 2.0 → 50% reduction
-- Nearest liquidation cluster within 1.5% → 50% reduction
-- Hard cap at `KELLY_MAX_NOTIONAL_PCT` (default 10%)
-- Floor: if adjusted fraction < `KELLY_MIN_NOTIONAL_PCT` (default 0.5%), emit FLAT
-
-**Governance:** `kelly_inputs` and `kelly_output` are written to `TradeIntent` and
-persisted in `DecisionTrace`. `FundManager` may reduce `suggested_notional_pct`
-but must never increase it. SAE enforces its own `position_limit` independently.
-
-### 15.3 Regime Mapper
-
-**Source:** `apps/quant/regimes/regime_mapper.py`
-
-`RegimeMapper` bridges Quant-Zero fine-grained regime labels to the canonical
-`MarketRegime` enum from `proto/common.proto`.
-
-**Design principle:** `MarketRegime` is an operational (risk-first) enum, not a
-descriptive one. High-volatility conditions override directional labels because
-risk control dominates direction in HL perp trading.
-
-**Mapping table:**
-
-| QZRegime | MarketRegime | Rationale |
-|---|---|---|
-| `trend_up_low_vol` | `TREND_UP` | Clean directional |
-| `trend_up_high_vol` | `HIGH_VOL` | Risk control dominates |
-| `trend_down_low_vol` | `TREND_DOWN` | Clean directional |
-| `trend_down_high_vol` | `HIGH_VOL` | Risk control dominates |
-| `range_low_vol` | `RANGE` | Mean-reversion regime |
-| `range_high_vol` | `HIGH_VOL` | Execution risk dominates |
-| `event_breakout` | `EVENT_RISK` | Structural uncertainty |
-| `liquidation_cascade_risk` | `EVENT_RISK` | Structurally unstable |
-| `funding_crowded_long` | `EVENT_RISK` | Carry blow-off risk |
-| `funding_crowded_short` | `EVENT_RISK` | Carry blow-off risk |
-
-**Dual-field design:** Both `qz_regime` (fine-grained) and `market_regime`
-(canonical operational) are written to `ObservationPack`. Agents reason with
-richer context; SAE and FundManager operate on the canonical enum only.
-
-### 15.4 Wave Structure Detector
-
-**Source:** `apps/quant/signals/wave_detector.py`, `apps/quant/signals/wave_adapter.py`
-
-**Adapted from:** [WaveEdge](https://github.com/koobraelac/wavedge)
-
-`WaveDetector` implements deterministic multi-timeframe wave structure classification
-on HL perp closed bars. `WaveAdapter` bridges detector output to `ObservationPack`,
-regime mapping, and SAE enrichment.
-
-**Wave phase classifications:**
-- `IMPULSIVE_UP` / `IMPULSIVE_DOWN` — directional trend with HH+HL or LL+LH sequence
-- `CORRECTIVE_ABC_UP` / `CORRECTIVE_ABC_DOWN` — bounded corrective structure
-- `COMPLEX_CORRECTION` — multi-leg WXY or similar overlapping correction
-- `TRANSITION` — structural break; highest uncertainty state
-- `UNKNOWN` — insufficient bars for classification
-
-**Key outputs to ObservationPack:**
-- `wave_phase`, `wave_phase_confidence`, `confluence_score`
-- `nearest_swing_high`, `nearest_swing_low`, distance percentages
-- `has_bearish_divergence`, `has_bullish_divergence` (RSI-based, swing-point-gated)
-
-**SAE enrichment:** `WaveSAEInputs.near_swing_failure` is set when current price
-is within 0.8% of the nearest confirmed swing low (for longs) or high (for shorts).
-SAE uses this as an additional 50% size penalty, not a veto.
-
-**Critical caveats:**
-- Wave labeling is inherently ambiguous; this produces the most probable interpretation
-- Run on closed bars only — intrabar computation produces false state transitions
-- HL liquidation spikes must be pre-filtered; `_filter_liq_wicks()` flags them
-  (actual clipping of frozen HLBar objects is a Phase B implementation TODO)
-- Elliott Wave analysis should be treated as strong advisory evidence, not authority
-
-### 15.5 Integration Points Summary
-
-| Quant Component | Consumes | Produces | Used By |
-|---|---|---|---|
-| `HyperliquidFeed` | HL REST/WS, IntelliClaw | `HLMarketContext` | `ObserverAgent`, jobs |
-| `WaveDetector` + `WaveAdapter` | `HLMarketContext.bars_*` | `WaveAnalysisResult`, `WaveSAEInputs` | `ObserverAgent`, SAE |
-| `QZRegimeClassifier` | `HLMarketContext`, wave phase | `RegimeMappingResult` | `ObserverAgent` |
-| `KellySizingService` | OOS stats, signal quality, market context | `KellyOutput` | `TraderAgent`, `FundManager` |
-
-**Governance invariant:** No quant module output is ever executable trading
-authority on its own. All quant outputs are advisory inputs to LLM agents or
-penalty inputs to deterministic safety checks. The decision chain — debate →
-trader → risk committee → fund manager → SAE → executor — remains intact.
 
 ---
 
-## 16. References
+### 14.6 Integration Points Summary
+
+| Quant Component | Consumes | Produces | Used By |
+| :-- | :-- | :-- | :-- |
+| `HyperliquidFeed` | HL REST/WS, IntelliClaw | `HLMarketContext` | `ObserverAgent`, jobs |
+| `WaveDetector` + `WaveAdapter` | `HLMarketContext.bars_*`, `mid_price` | `WaveAnalysisResult`, `WaveSAEInputs` | `ObserverAgent`, SAE |
+| `QZRegimeClassifier` | `HLMarketContext`, wave phase | `RegimeMappingResult` | `ObserverAgent` |
+| `KellySizingService` | OOS stats, signal quality, market context | `KellyOutput` in `TradeIntent` | `TraderAgent`, `FundManager` |
+
+
+---
+
+## 15. References
 
 - TradingAgents paper: https://arxiv.org/pdf/2412.20138
 - TauricResearch/TradingAgents: https://github.com/TauricResearch/TradingAgents
-- FinArena paper: https://arxiv.org/abs/2509.11420
+- FinArena paper (multi-agent trading evaluation): https://arxiv.org/abs/2509.11420
 - HyperLiquid API docs: https://hyperliquid.gitbook.io/hyperliquid-docs
 - Quant-Zero (signal architecture, Kelly framework): https://github.com/marcohwlam/quant-zero
 - WaveEdge (wave structure detection, swing levels): https://github.com/koobraelac/wavedge
 - Haiku trading agent framework: https://docs.haiku.trade/
 - This repo: https://github.com/enuno/hyperliquid-trading-firm
 - DEVELOPMENT_PLAN.md: phased build plan with exit gates
-
----
-
-## 17. Limitations and Scope Constraints
-
-**Out of scope:** cross-exchange arbitrage, equities/options, unattended live trading without
-HITL, self-modifying strategy logic, AI reasoning directly in execution path without SAE review,
-treasury initiating leveraged positions, sub-4h decision cycles.
-
-**Performance claims:** The TradingAgents paper reported 26–27% cumulative return and Sharpe 6–8
-on a narrow Q1 2024 equities simulation. The FinArena paper reports improvements on equities
-backtests. Neither validates crypto perps live trading performance. All performance claims
-require independent walk-forward validation in paper mode before any live deployment decision.
