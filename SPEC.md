@@ -944,11 +944,150 @@ require independent walk-forward validation in paper mode before any live deploy
 
 ---
 
-## 15. References
+## 15. Quant Layer — Signal Validation and Sizing
+
+The `apps/quant/` module provides deterministic, quantitative signal pre-processing
+that runs before LLM agents and feeds structured evidence into `ObservationPack`.
+It never makes trading decisions; it informs them.
+
+### 15.1 HyperLiquid Feed Adapter
+
+**Source:** `apps/quant/feeds/hyperliquid_feed.py`
+
+`HyperliquidFeed` produces `HLMarketContext` objects consumed by `ObserverAgent`,
+`QZRegimeClassifier`, and `KellySizingService`. It operates snapshot-first (REST
+bootstrap) with WebSocket delta updates and periodic REST reconciliation.
+
+**Architecture principles:**
+- Bootstrap via REST before any WS subscriptions
+- Reconcile every 30 seconds to detect sequence gaps and drift
+- Set `has_data_gap = true` if any source exceeds 60 seconds stale
+- SAE receives stale flag and must fail-close on `has_data_gap`
+
+**Key normalizations for HL perps:**
+- Funding rate normalized to 8-hour equivalent regardless of venue cadence
+- `depth_10bps_usd` computed as order book depth within ±10bps of mid
+- Liquidation clusters expressed as signed distance percentage from current mid
+- Bars are closed-bar only — current incomplete bar is never included
+
+**Source analysis:** Adapted from [Quant-Zero](https://github.com/marcohwlam/quant-zero)
+and [WaveEdge](https://github.com/koobraelac/wavedge). Quant-Zero provided the
+closed-bar signal architecture and Kelly sizing framework. WaveEdge provided the
+wave structure detection algorithm, liquidation-proximity swing detection, and
+multi-timeframe divergence detection concepts.
+
+### 15.2 Kelly Sizing Service
+
+**Source:** `apps/quant/sizing/kelly_sizing_service.py`
+
+`KellySizingService` computes a fractional Kelly position size and writes a fully
+auditable `KellyOutput` into `TradeIntent` and `DecisionTrace`.
+
+**Critical constraint:** `win_prob` and `payoff_ratio` MUST come from validated
+out-of-sample historical estimates from `apps/jobs/ablation_runner.py` — never
+from raw LLM confidence scores. A minimum of 30 OOS trades is required before
+Kelly sizing is active for any (strategy, asset, regime, direction) bucket.
+
+**Penalty adjustments applied sequentially:**
+- `signal_quality < 0.60` → 50% size reduction
+- Funding rate > 0.10% per 8h on LONG → 25% reduction
+- Funding rate > 0.20% per 8h on LONG → 50% reduction
+- Realized vol z-score > 2.0 → 50% reduction
+- Nearest liquidation cluster within 1.5% → 50% reduction
+- Hard cap at `KELLY_MAX_NOTIONAL_PCT` (default 10%)
+- Floor: if adjusted fraction < `KELLY_MIN_NOTIONAL_PCT` (default 0.5%), emit FLAT
+
+**Governance:** `kelly_inputs` and `kelly_output` are written to `TradeIntent` and
+persisted in `DecisionTrace`. `FundManager` may reduce `suggested_notional_pct`
+but must never increase it. SAE enforces its own `position_limit` independently.
+
+### 15.3 Regime Mapper
+
+**Source:** `apps/quant/regimes/regime_mapper.py`
+
+`RegimeMapper` bridges Quant-Zero fine-grained regime labels to the canonical
+`MarketRegime` enum from `proto/common.proto`.
+
+**Design principle:** `MarketRegime` is an operational (risk-first) enum, not a
+descriptive one. High-volatility conditions override directional labels because
+risk control dominates direction in HL perp trading.
+
+**Mapping table:**
+
+| QZRegime | MarketRegime | Rationale |
+|---|---|---|
+| `trend_up_low_vol` | `TREND_UP` | Clean directional |
+| `trend_up_high_vol` | `HIGH_VOL` | Risk control dominates |
+| `trend_down_low_vol` | `TREND_DOWN` | Clean directional |
+| `trend_down_high_vol` | `HIGH_VOL` | Risk control dominates |
+| `range_low_vol` | `RANGE` | Mean-reversion regime |
+| `range_high_vol` | `HIGH_VOL` | Execution risk dominates |
+| `event_breakout` | `EVENT_RISK` | Structural uncertainty |
+| `liquidation_cascade_risk` | `EVENT_RISK` | Structurally unstable |
+| `funding_crowded_long` | `EVENT_RISK` | Carry blow-off risk |
+| `funding_crowded_short` | `EVENT_RISK` | Carry blow-off risk |
+
+**Dual-field design:** Both `qz_regime` (fine-grained) and `market_regime`
+(canonical operational) are written to `ObservationPack`. Agents reason with
+richer context; SAE and FundManager operate on the canonical enum only.
+
+### 15.4 Wave Structure Detector
+
+**Source:** `apps/quant/signals/wave_detector.py`, `apps/quant/signals/wave_adapter.py`
+
+**Adapted from:** [WaveEdge](https://github.com/koobraelac/wavedge)
+
+`WaveDetector` implements deterministic multi-timeframe wave structure classification
+on HL perp closed bars. `WaveAdapter` bridges detector output to `ObservationPack`,
+regime mapping, and SAE enrichment.
+
+**Wave phase classifications:**
+- `IMPULSIVE_UP` / `IMPULSIVE_DOWN` — directional trend with HH+HL or LL+LH sequence
+- `CORRECTIVE_ABC_UP` / `CORRECTIVE_ABC_DOWN` — bounded corrective structure
+- `COMPLEX_CORRECTION` — multi-leg WXY or similar overlapping correction
+- `TRANSITION` — structural break; highest uncertainty state
+- `UNKNOWN` — insufficient bars for classification
+
+**Key outputs to ObservationPack:**
+- `wave_phase`, `wave_phase_confidence`, `confluence_score`
+- `nearest_swing_high`, `nearest_swing_low`, distance percentages
+- `has_bearish_divergence`, `has_bullish_divergence` (RSI-based, swing-point-gated)
+
+**SAE enrichment:** `WaveSAEInputs.near_swing_failure` is set when current price
+is within 0.8% of the nearest confirmed swing low (for longs) or high (for shorts).
+SAE uses this as an additional 50% size penalty, not a veto.
+
+**Critical caveats:**
+- Wave labeling is inherently ambiguous; this produces the most probable interpretation
+- Run on closed bars only — intrabar computation produces false state transitions
+- HL liquidation spikes must be pre-filtered; `_filter_liq_wicks()` flags them
+  (actual clipping of frozen HLBar objects is a Phase B implementation TODO)
+- Elliott Wave analysis should be treated as strong advisory evidence, not authority
+
+### 15.5 Integration Points Summary
+
+| Quant Component | Consumes | Produces | Used By |
+|---|---|---|---|
+| `HyperliquidFeed` | HL REST/WS, IntelliClaw | `HLMarketContext` | `ObserverAgent`, jobs |
+| `WaveDetector` + `WaveAdapter` | `HLMarketContext.bars_*` | `WaveAnalysisResult`, `WaveSAEInputs` | `ObserverAgent`, SAE |
+| `QZRegimeClassifier` | `HLMarketContext`, wave phase | `RegimeMappingResult` | `ObserverAgent` |
+| `KellySizingService` | OOS stats, signal quality, market context | `KellyOutput` | `TraderAgent`, `FundManager` |
+
+**Governance invariant:** No quant module output is ever executable trading
+authority on its own. All quant outputs are advisory inputs to LLM agents or
+penalty inputs to deterministic safety checks. The decision chain — debate →
+trader → risk committee → fund manager → SAE → executor — remains intact.
+
+---
+
+## 16. References
 
 - TradingAgents paper: https://arxiv.org/pdf/2412.20138
 - TauricResearch/TradingAgents: https://github.com/TauricResearch/TradingAgents
 - FinArena paper: https://arxiv.org/abs/2509.11420
-- HyperLiquid API: https://hyperliquid.gitbook.io/hyperliquid-docs
+- HyperLiquid API docs: https://hyperliquid.gitbook.io/hyperliquid-docs
+- Quant-Zero (signal architecture, Kelly framework): https://github.com/marcohwlam/quant-zero
+- WaveEdge (wave structure detection, swing levels): https://github.com/koobraelac/wavedge
+- Haiku trading agent framework: https://docs.haiku.trade/
 - This repo: https://github.com/enuno/hyperliquid-trading-firm
 - DEVELOPMENT_PLAN.md: phased build plan with exit gates
