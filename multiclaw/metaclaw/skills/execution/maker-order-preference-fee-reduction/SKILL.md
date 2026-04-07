@@ -41,12 +41,12 @@ a significant drag or tailwind on overall P&L.
 
 ### Current Maker/Taker Schedule (Verify at `/info → meta` before trading)
 
-| Tier | 30d Volume (USD) | Maker Fee | Taker Fee | Maker Rebate vs. Taker |
-|---|---|---|---|
-| Base | < $1M | -0.010% (rebate) | +0.035% | 0.045% per side |
-| Tier 1 | $1M–10M | -0.010% (rebate) | +0.035% | 0.045% per side |
-| Tier 2 | $10M–100M | -0.012% (rebate) | +0.030% | 0.042% per side |
-| Tier 3 | > $100M | -0.014% (rebate) | +0.025% | 0.039% per side |
+| Tier   | 30d Volume (USD) | Maker Fee          | Taker Fee          | Maker Rebate vs. Taker |
+|--------|------------------|--------------------|--------------------|------------------------|
+| Base   | < $1M            | -0.010% (rebate)   | +0.035%            | 0.045% per side        |
+| Tier 1 | $1M–10M          | -0.010% (rebate)   | +0.035%            | 0.045% per side        |
+| Tier 2 | $10M–100M        | -0.012% (rebate)   | +0.030%            | 0.042% per side        |
+| Tier 3 | > $100M          | -0.014% (rebate)   | +0.025%            | 0.039% per side        |
 
 > **Always fetch the live fee schedule** via `/info` before computing
 > break-even targets — HyperLiquid has updated fees historically and
