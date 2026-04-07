@@ -62,9 +62,9 @@ apps/agents/src/
 ## Decision Pipeline (High-Level)
 
 ```
-Market / IntelliClaw / On-chain / News Data
-         │
-         ▼
+ Market / IntelliClaw / On-chain / News Data
+                  │
+                  ▼
  ┌──────────────────────────────────────────┐
  │  ANALYST LAYER  (parallel, deep models)  │
  │  Market · News · Fundamental · On-chain  │
