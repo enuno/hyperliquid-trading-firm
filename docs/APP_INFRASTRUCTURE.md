@@ -1,7 +1,7 @@
 # APP_INFRASTRUCTURE.md
 
 > **Hyperliquid Autonomous Trading Firm — Application Infrastructure Reference**
-> Version: 1.0.0 | Last Updated: 2026-04-07
+> Version: 1.0.1 | Last Updated: 2026-04-07
 
 ---
 
@@ -220,7 +220,6 @@ graph LR
     end
 
     subgraph NODES["Local hl-node Cluster"]
-        direction TB
         N1["hl-node-1 (primary)\nflags: --write-fills\n--write-order-statuses\n--write-raw-book-diffs\n--batch-by-block\n--serve-info :3001/info\n--serve-eth-rpc :3001/evm"]
         N2["hl-node-2 (HA replica)\nflags: --write-fills\n--write-order-statuses\n--batch-by-block"]
     end
@@ -325,8 +324,7 @@ flowchart TB
         OPENCLAW["OpenClaw / MultiClawCore\n(HITL · governance · strategy lifecycle\ncycle trigger · halt/resume · policy approval)"]
     end
 
-    subgraph ORCH["Orchestrator API (Node/TS)"]
-        direction LR
+    subgraph ORCH_SVC["Orchestrator API (Node/TS)"]
         CYCLE["CycleRunner\n(11-stage pipeline)"]
         STATE["Shared Typed State Store\n(GlobalAgentState)"]
         BUS["Internal Event Bus"]
@@ -334,31 +332,23 @@ flowchart TB
     end
 
     subgraph AGENTS_SVC["agents-svc (Python — TradingAgents)"]
-        direction TB
-        subgraph ANALYSTS["Analyst Layer (parallel · RAG-augmented)"]
-            MA["MarketAnalyst\n(OHLCV · OB · funding)"]
-            NA["NewsAnalyst\n(IntelliClaw · agentmail)"]
-            FA["FundamentalAnalyst\n(Dune · Glassnode)"]
-            SA["SentimentAnalyst\n(bot-filtered)"]
-            OCA["OnChainFlowAnalyst\n(vault flows · liquidation map)"]
-        end
-        subgraph DEBATE["Research Debate"]
-            BULL["BullResearcher"]
-            BEAR["BearResearcher"]
-            FAC["DebateFacilitator"]
-        end
-        subgraph TRADER_RISK["Trader + Risk Council"]
-            TR["TraderAgent"]
-            RA["RiskAgent-Aggressive"]
-            RN["RiskAgent-Neutral"]
-            RC_C["RiskAgent-Conservative"]
-            FM["FundManagerAgent"]
-        end
+        MA["MarketAnalyst\n(OHLCV · OB · funding)"]
+        NA["NewsAnalyst\n(IntelliClaw · agentmail)"]
+        FA["FundamentalAnalyst\n(Dune · Glassnode)"]
+        SA["SentimentAnalyst\n(bot-filtered)"]
+        OCA["OnChainFlowAnalyst\n(vault flows · liquidation map)"]
+        BULL["BullResearcher"]
+        BEAR["BearResearcher"]
+        FAC["DebateFacilitator"]
+        TR["TraderAgent"]
+        RA["RiskAgent-Aggressive"]
+        RN["RiskAgent-Neutral"]
+        RC_C["RiskAgent-Conservative"]
+        FM["FundManagerAgent"]
         ATLAS_OPT["PromptOptimizer\n(ATLAS AdaptiveOPRO\noff-path · daily job)"]
     end
 
-    subgraph SAE["sae-engine (Node/TS — deterministic, no LLM)"]
-        direction TB
+    subgraph SAE_SVC["sae-engine (Node/TS — deterministic, no LLM)"]
         CHECK["Policy Checks (in order):\n1. Stale data gate\n2. Position limits\n3. Leverage caps\n4. Daily loss limit\n5. Max drawdown\n6. Liquidity gate\n7. Correlation gate\n8. Funding rate gate\n9. Event blackout\n10. Regime check"]
         STAGE["buildStagedExecution\n(TWAP · VWAP · POV · Iceberg)"]
         RL_EXE["RLExecutionAgent\n(PPO · slice timing\nfrom OB microstructure)"]
@@ -385,21 +375,45 @@ flowchart TB
         OPUS["Claude Opus / o3\n(debate · trader · fund manager)"]
     end
 
-    OPENCLAW --> ORCH
-    CYCLE --> ANALYSTS
-    MA & NA & FA & SA & OCA --> DEBATE
-    DEBATE --> TRADER_RISK
-    TRADER_RISK --> HITL_GATE
-    HITL_GATE --> SAE
-    SAE --> EXECUTORS_SVC
+    OPENCLAW --> ORCH_SVC
+    CYCLE --> MA
+    CYCLE --> NA
+    CYCLE --> FA
+    CYCLE --> SA
+    CYCLE --> OCA
+    MA --> BULL
+    NA --> BULL
+    FA --> BULL
+    SA --> BULL
+    OCA --> BULL
+    MA --> BEAR
+    NA --> BEAR
+    FA --> BEAR
+    SA --> BEAR
+    OCA --> BEAR
+    BULL --> FAC
+    BEAR --> FAC
+    FAC --> TR
+    TR --> RA
+    TR --> RN
+    TR --> RC_C
+    RA --> FM
+    RN --> FM
+    RC_C --> FM
+    FM --> HITL_GATE
+    HITL_GATE --> SAE_SVC
+    SAE_SVC --> EXECUTORS_SVC
     EXECUTORS_SVC --> RECONCILE
     RECONCILE --> STATE
 
-    AGENTS_SVC --> OLLAMA & HAIKU & SONNET & OPUS
+    AGENTS_SVC --> OLLAMA
+    AGENTS_SVC --> HAIKU
+    AGENTS_SVC --> SONNET
+    AGENTS_SVC --> OPUS
     INTELLICLAW --> AGENTS_SVC
-    ELIZA --> ORCH
-    TREASURY --> ORCH
-    OPTIMIZER --> ORCH
+    ELIZA --> ORCH_SVC
+    TREASURY --> ORCH_SVC
+    OPTIMIZER --> ORCH_SVC
     JOBS --> ATLAS_OPT
 ```
 
@@ -409,6 +423,8 @@ flowchart TB
 
 ```mermaid
 graph LR
+    NGINX["nginx Ingress\n(Reverse Proxy · TLS)"]
+
     subgraph FRONTEND["Web Frontends"]
         DASH["dashboard\n(Next.js :3000)\nDecisions · Governance · PnL\nDecisionTrace · Prompt Policies"]
         HL_STATS_WEB["hyperliquid-stats-web\n(React :3001)\nPublic analytics frontend"]
@@ -430,6 +446,7 @@ graph LR
     subgraph AI_MGMT["AI / ML Management"]
         MLFLOW["MLflow\n(:5000)\nExperiment tracking\nmodel versioning"]
         OLLAMA_SVC["Ollama\n(:11434)\nLocal model serving"]
+        GRAFANA_SVC["Grafana\n(:3000)\nObservability dashboards"]
     end
 
     NGINX --> DASH
@@ -437,13 +454,12 @@ graph LR
     NGINX --> OPENWEBUI
     NGINX --> ARGOCD
     NGINX --> RANCHER
-    NGINX --> GRAFANA_FWD["Grafana"]
+    NGINX --> GRAFANA_SVC
     NGINX --> MLFLOW
 
     DASH --> ORCH_API
     HL_STATS_WEB --> HL_STATS_API
     OPENWEBUI --> OLLAMA_SVC
-    AGENTS_SVC --> OLLAMA_SVC
 ```
 
 ---
@@ -476,12 +492,16 @@ graph TB
         MLFLOW["MLflow\n(strategy experiments\nprompt-policy versions\nbacktest results)"]
     end
 
-    K8S_METRICS & APP_METRICS & HL_METRICS --> PROM
+    K8S_METRICS --> PROM
+    APP_METRICS --> PROM
+    HL_METRICS --> PROM
     PROM --> GRAFANA
     LOKI --> GRAFANA
     TEMPO --> GRAFANA
     PROM --> ALERTMGR
-    ALERTMGR --> SLACK & AGENTMAIL & PAGERDUTY
+    ALERTMGR --> SLACK
+    ALERTMGR --> AGENTMAIL
+    ALERTMGR --> PAGERDUTY
     JOBS_SVC["jobs-svc"] --> MLFLOW
     MLFLOW --> GRAFANA
 ```
@@ -529,17 +549,29 @@ graph TB
         API_GW["API Gateway\n(Envoy / Traefik\nmulti-agent fan-out\nWS connection multiplexing\ncircuit breaking)"]
     end
 
-    OPS --> CF_DNS --> CF_WAF --> CF_TUNNEL
-    OPENCLAW_CLI --> TS_REMOTE --> TS_EXIT
+    subgraph K8S_SVCS["K8s Services"]
+        ORCH_API["orchestrator-api"]
+        HL_NODE_INFO["hl-node :3001/info"]
+        OB_WS["order-book-server :8000"]
+        K8S_PODS["K8s Pods\n(inter-pod mTLS)"]
+        AKASH_NODES["Akash Worker Nodes"]
+        FLY_NODES["Fly.io Machines"]
+    end
+
+    OPS --> CF_DNS
+    CF_DNS --> CF_WAF
+    CF_WAF --> CF_TUNNEL
+    OPENCLAW_CLI --> TS_REMOTE
+    TS_REMOTE --> TS_EXIT
     CF_TUNNEL --> NGINX_INGRESS
     NGINX_INGRESS --> API_GW
-    API_GW --> ORCH_API["orchestrator-api"]
-    API_GW --> HL_NODE_INFO["hl-node :3001/info"]
-    API_GW --> OB_WS["order-book-server :8000"]
+    API_GW --> ORCH_API
+    API_GW --> HL_NODE_INFO
+    API_GW --> OB_WS
 
-    TS_K8S -.->|"service mesh\ninter-pod mTLS"| K8S_PODS["K8s Pods"]
-    TS_AKASH -.->|"overflow agent compute"| AKASH_NODES["Akash Worker Nodes"]
-    TS_FLY -.->|"edge execution agent"| FLY_NODES["Fly.io Machines"]
+    TS_K8S -.-> K8S_PODS
+    TS_AKASH -.-> AKASH_NODES
+    TS_FLY -.-> FLY_NODES
 ```
 
 ---
@@ -604,17 +636,29 @@ graph LR
     EVM_SYNC2["hyper-evm-sync"] --> S3_EVM
     HL_STATS2["hyperliquid-stats"] --> S3_STATS
 
-    AGENT_SVC2["agents-svc"] --> ANTHRO2 & OPENAI2 & PERP2 & VENICE2 & KIMI2
+    AGENT_SVC2["agents-svc"] --> ANTHRO2
+    AGENT_SVC2 --> OPENAI2
+    AGENT_SVC2 --> PERP2
+    AGENT_SVC2 --> VENICE2
+    AGENT_SVC2 --> KIMI2
     AGENT_SVC2 --> SMEM2
     ALERTMGR2["Alertmanager"] --> AGENTMAIL2
 
-    AGENT_SVC2 --> COINGECKO & CMC & DUNE & GLASSNODE & PYTH & DEFI_LLAMA & STAKING_RWD
+    AGENT_SVC2 --> COINGECKO
+    AGENT_SVC2 --> CMC
+    AGENT_SVC2 --> DUNE
+    AGENT_SVC2 --> GLASSNODE
+    AGENT_SVC2 --> PYTH
+    AGENT_SVC2 --> DEFI_LLAMA
+    AGENT_SVC2 --> STAKING_RWD
 
-    HL_NODE_1_EXT["hl-node-1"] -."fallback if local down".-> CHAINSTACK2 & DWELLIR & IMPERATOR
+    HL_NODE_1_EXT["hl-node-1"] -. "fallback if local down" .-> CHAINSTACK2
+    HL_NODE_1_EXT -. "fallback if local down" .-> DWELLIR
+    HL_NODE_1_EXT -. "fallback if local down" .-> IMPERATOR
     EXECUTORS_SVC2["executors-svc"] --> HL_API_EXT["api.hyperliquid.xyz\n(always public)"]
 
-    JOBS_SVC2 -."overflow GPU".-> AK_COMPUTE
-    EXECUTORS_SVC2 -."geo-edge exec".-> FLY_EDGE
+    JOBS_SVC2 -. "overflow GPU" .-> AK_COMPUTE
+    EXECUTORS_SVC2 -. "geo-edge exec" .-> FLY_EDGE
 ```
 
 ---
@@ -643,12 +687,12 @@ flowchart LR
         F6["Community gossip root peers\n(ASXN · Imperator · B-Harvest)"]
     end
 
-    L1 -."node down / stale data > 90s".-> F1
-    L2 -."state desync / auto-exit".-> F2
-    L3 -."EVM RPC unavailable".-> F3
-    L4 -."GPU OOM / node failure".-> F4
-    L5 -."DB failure".-> F5
-    L6 -."peer desync".-> F6
+    L1 -. "node down or stale data gt 90s" .-> F1
+    L2 -. "state desync or auto-exit" .-> F2
+    L3 -. "EVM RPC unavailable" .-> F3
+    L4 -. "GPU OOM or node failure" .-> F4
+    L5 -. "DB failure" .-> F5
+    L6 -. "peer desync" .-> F6
 ```
 
 | Service | Primary | Fallback | Trigger Condition | Notes |
@@ -685,11 +729,20 @@ graph TB
         CLAWSEC["prompt.security/clawsec\n(prompt injection hardening)"]
     end
 
-    VAULT --> K8S_PODS["K8s pods via\nVault Agent Sidecar\nor External Secrets Operator"]
-    NITRO --> ELIZA_SVC["ElizaOS\n(on-chain signing)"]
-    NITRO --> EXECUTORS_SVC["executors-svc\n(live trade signing)"]
-    TAILSCALE_ACL --> ALL_SERVICES["All inter-service traffic"]
-    CF_ZERO --> OPERATOR_ACCESS["Operator browser access\nto dashboards"]
+    subgraph CONSUMERS["Secret Consumers"]
+        K8S_PODS["K8s pods\n(via Vault Agent Sidecar\nor External Secrets Operator)"]
+        ELIZA_SVC["ElizaOS\n(on-chain signing)"]
+        EXECUTORS_SVC["executors-svc\n(live trade signing)"]
+        ALL_SERVICES["All inter-service traffic"]
+        OPERATOR_ACCESS["Operator browser access\nto dashboards"]
+    end
+
+    VAULT --> K8S_PODS
+    NITRO --> ELIZA_SVC
+    NITRO --> EXECUTORS_SVC
+    TAILSCALE_ACL --> ALL_SERVICES
+    CF_ZERO --> OPERATOR_ACCESS
+    MTLS --> ALL_SERVICES
 ```
 
 ---
@@ -707,8 +760,6 @@ graph TB
     end
 
     subgraph K8S_CLUSTER["Kubernetes Cluster"]
-        direction TB
-
         subgraph NS_INFRA["namespace: hl-infra"]
             HL_NODE_DEPLOY["hl-node-1 StatefulSet\nhl-node-2 StatefulSet\norder-book-server Deployment\nblock-importer Job\nhyper-evm-sync StatefulSet\nnode-pruner CronJob"]
         end
@@ -764,7 +815,12 @@ graph TB
     end
 
     GIT_REPO --> ARGOCD_CTRL
-    ARGOCD_CTRL --> NS_INFRA & NS_DATA & NS_AGENTS & NS_OBS & NS_APP & NS_PLATFORM
+    ARGOCD_CTRL --> NS_INFRA
+    ARGOCD_CTRL --> NS_DATA
+    ARGOCD_CTRL --> NS_AGENTS
+    ARGOCD_CTRL --> NS_OBS
+    ARGOCD_CTRL --> NS_APP
+    ARGOCD_CTRL --> NS_PLATFORM
 ```
 
 ---
@@ -794,9 +850,9 @@ graph TB
 
     PRIMARY_K8S <-->|"Tailscale WireGuard"| SECONDARY_DC
     PRIMARY_K8S <-->|"Tailscale WireGuard"| EDGE_CLOUD
-    OPS_LAPTOP <-->|"Tailscale WireGuard\n+ Cloudflare Zero Trust"| PRIMARY_K8S
-    PRIMARY_K8S -->|"trade submission\n(always)"| HL_API_FINAL["api.hyperliquid.xyz"]
-    PRIMARY_K8S -->|"LLM APIs · market data MCPs\nagentmail · supermemory"| EXTERNAL_SAAS["External SaaS APIs"]
+    OPS_LAPTOP <-->|"Tailscale WireGuard + Cloudflare Zero Trust"| PRIMARY_K8S
+    PRIMARY_K8S -->|"trade submission (always)"| HL_API_FINAL["api.hyperliquid.xyz"]
+    PRIMARY_K8S -->|"LLM APIs · market data MCPs · agentmail · supermemory"| EXTERNAL_SAAS["External SaaS APIs"]
 ```
 
 ---
