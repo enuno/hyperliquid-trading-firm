@@ -33,6 +33,11 @@ apps/
   dashboard/          # React/Next.js web UI
   jobs/               # Offline backtests, RL training, prompt updates
 
+multiclaw/            # User-directed research layer (non-execution path)
+  AutoResearchClaw/   # 23-stage autonomous research pipeline (submodule)
+  researchclaw-skill/ # OpenClaw skill wrapper for AutoResearchClaw (submodule)
+  research-bridge/    # Adapter: context injector, output parser, job registry
+
 infra/
   k8s/                # Kubernetes manifests and overlays
   terraform/          # Optional infra provisioning
@@ -41,9 +46,15 @@ infra/
 config/               # Environment, logging, DB, queues, strategy configs
 strategy/             # Dual-file strategy architecture (see §4)
 agent/                # Core runtime: paper bot, live bot, iteration loop
-logs/                 # SQLite experiments DB + JSONL event log
+logs/
+  research/
+    artifacts/        # ResearchClaw output PDFs, synthesis JSON, citations
+    approved_hypotheses/  # Human-approved HypothesisSet outputs for iter loop
+    research_registry.db  # SQLite job registry (topic, stage, output path)
 tests/                # Unit and integration tests per service
-prompts/              # LLM system and user prompt templates
+prompts/
+  research/           # ResearchClaw prompt templates (market_structure,
+                      # crypto_project_scan, strategy_evaluation)
 ```
 
 ---
@@ -65,6 +76,8 @@ prompts/              # LLM system and user prompt templates
 | `prompts/**` | LLM system prompts and prompt templates |
 | `tests/**` | Test coverage for any of the above |
 | `infra/**` | K8s manifests, Terraform, Helm — with care (see §6) |
+| `multiclaw/research-bridge/**` | Bridge adapter: context injector, output parser, registry writer |
+| `logs/research/approved_hypotheses/**` | Written only after human approval (HypothesisSet.approved=true) |
 
 ### 3.2 Files Agents MUST NOT Edit
 
@@ -79,12 +92,18 @@ prompts/              # LLM system and user prompt templates
 | `agent/recovery.py` | Recovery state machine; human-only |
 | `agent/exchange.py` | HL SDK auth and rate-limit wrapper; human-only |
 | `agent/harness.py` | Backtest scoring; must remain deterministic |
+| `logs/research/artifacts/**` | Read-only research artifacts; never written by agent code |
 | `k8s/secret-template.yaml` | Never write secrets to files |
 | `.env` / any `*.env` | Never write secrets to files |
 
 > **Hard rule:** The agent has **no write path** to `VAULT_SUBACCOUNT_ADDRESS`,
 > `HL_PRIVATE_KEY`, or any K8s Secret value. These are injected at runtime by
 > the human operator.
+
+> **Research isolation rule:** `ResearchAgent` and `research-bridge` outputs are
+> READ-ONLY proposals until a human sets `HypothesisSet.approved = true` via the
+> dashboard. No research artifact may be written to `strategy/`, `agent/`, or
+> any execution-path directory.
 
 ---
 
@@ -146,6 +165,13 @@ When implementing or extending any agent in `apps/agents/`, preserve this
 pipeline order. Agents must not call executors directly; all trades MUST pass
 through the SAE engine.
 
+**Research Agent (non-execution path):**  
+`apps/agents/research_agent.py` runs outside the above pipeline. It wraps
+the `multiclaw/research-bridge` adapter and exposes four methods:
+`run_deep_research()`, `get_strategy_evaluation()`, `scan_crypto_project()`,
+`get_pending_jobs()`. It has no write path to any execution-path file and is
+never called from the SAE or Executor layers.
+
 ---
 
 ## 6. Infrastructure and Deployment Rules
@@ -158,6 +184,9 @@ through the SAE engine.
 - **Strategy updates** reach the paper bot via ConfigMap update (ArgoCD picks
   up the `strategy/strategy_paper.py` git commit). Do not hot-patch running
   pods directly.
+- **ResearchClaw jobs** run on a dedicated research worker pod isolated from
+  the trading cluster. `experiment_mode: simulated` is the default; `sandbox`
+  mode (Docker) is only permitted on the research worker node.
 - **Terraform / Helm changes** must be reviewed by a human before `apply`.
   Agents may generate or modify these files but must not trigger applies.
 
@@ -213,7 +242,7 @@ through the SAE engine.
 
 ---
 
-## 9. Autoresearch Iteration Loop Guidance
+## 9. Autoresearch & ResearchClaw Iteration Loop Guidance
 
 When working on `agent/iteration_loop.py` or related files, respect these
 constraints:
@@ -229,6 +258,26 @@ constraints:
 - Backtest timeout (5 min) is enforced via `asyncio.wait_for`; handle
   `asyncio.TimeoutError` gracefully.
 
+**ResearchClaw integration constraints:**
+
+- The iteration loop reads approved hypotheses from
+  `logs/research/approved_hypotheses/{job_id}/hypotheses.json` only.
+  It never reads from `logs/research/artifacts/` directly.
+- `parameter_suggestions` values from `HypothesisSet` are used as **search
+  bounds** for hyperparameter optimisation, not as direct parameter overrides.
+  All suggested values are validated against `StrategyConfig` field range bounds
+  before inclusion in the search space. Unknown keys are logged and skipped.
+- `HypothesisSet.approved` must be `true` (set by human via dashboard) before
+  the iteration loop may consume any hypothesis. The `ResearchAgent` never sets
+  this field.
+- ResearchClaw job invocation modes and prompt templates are defined in
+  `prompts/research/` (`market_structure.yaml`, `crypto_project_scan.yaml`,
+  `strategy_evaluation.yaml`). Do not hardcode topic strings in agent code;
+  always compose topics via `_format_*_topic()` bridge methods.
+- **Circuit breaker isolation:** ResearchClaw pipeline failures (rate limits,
+  LLM errors, low quality score) MUST NOT trigger trading halts. Research
+  degradation is isolated from the execution plane.
+
 ---
 
 ## 10. Dashboard Development
@@ -239,6 +288,10 @@ The research dashboard (`apps/dashboard/`) must:
   `candleSnapshot` API + local time-series store)
 - Show paper P/L, live P/L, vault balance, drawdown events, and promotion events
 - Show current mode: `backtest | paper | live | recovery`
+- **Research panel** — display ResearchClaw job queue (stage X/23 progress),
+  artifact browser (`logs/research/artifacts/`), hypothesis feed with
+  approve/reject controls, and literature citation cache. The approve action
+  is the only path that sets `HypothesisSet.approved = true`.
 - **Never expose secrets, raw API keys, or HL private key material** in any
   API response or rendered UI
 - Implement SSO or reverse-proxy auth before any production deployment
@@ -257,9 +310,13 @@ Orchestrator API only:
 | `PUT /config/strategy` | Update strategy configuration for the paper bot |
 | `GET /traces/:id` | Retrieve a full decision trace for audit / auto-research |
 | `GET /metrics` | Pull live performance metrics for monitoring |
+| `POST /research/jobs` | Initiate a ResearchClaw job (STRATEGY_SCAN, PROJECT_AUDIT, DEEP) |
+| `GET /research/jobs/:id` | Poll ResearchClaw job status and stage progress (1–23) |
+| `GET /research/hypotheses` | List approved and pending HypothesisSet entries |
 
 Do not add endpoints that expose private keys, vault addresses, or allow direct
-order placement bypassing the SAE engine.
+order placement bypassing the SAE engine. Research endpoints must never return
+raw `logs/research/artifacts/` paths to external callers.
 
 ---
 
@@ -275,3 +332,5 @@ order placement bypassing the SAE engine.
 | Validate all external data before trusting it | Log private keys or API tokens at any level |
 | Use async-first patterns throughout Python code | Hot-patch running pods directly |
 | Use the `exchange.py` wrapper for all HL API calls | Add endpoints that bypass the SAE engine |
+| Compose ResearchClaw topics via `_format_*_topic()` bridge methods | Write research artifacts to `strategy/` or `agent/` paths |
+| Require `HypothesisSet.approved = true` before iter loop consumption | Set `HypothesisSet.approved` from `ResearchAgent` code |
