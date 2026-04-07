@@ -1,0 +1,380 @@
+# prompts/research/crypto_project_scan.yaml
+# ===========================================
+# Prompt template for ResearchAgent PROJECT_AUDIT jobs.
+#
+# Used by: apps/agents/src/agents/research_agent.py
+#   -> scan_crypto_project()
+#   -> _format_project_audit_topic()
+#
+# Mode: ResearchMode.PROJECT_AUDIT
+# Gate matrix: Stage 5 (literature), Stage 9 (experiment design), Stage 20 (final quality)
+# All three human gates are ACTIVE. None may be auto-approved in production.
+#
+# Output artifact consumed by: _parse_project_report() -> ProjectReport dataclass
+#   synthesis.json fields: ticker, summary, tokenomics, competitive_landscape,
+#                          defi_integration_risks, citations, quality_score
+#
+# Template variables (injected by context_injector / _format_project_audit_topic):
+#   {TICKER}              - Asset ticker symbol (e.g. "HYPE", "BTC", "OP")
+#   {WHITEPAPER_URL}      - Optional URL to project whitepaper or technical docs
+#   {ON_CHAIN_CONTEXT}    - JSON blob of pre-fetched on-chain metrics (may be empty "{}")
+#   {FIRM_CONTEXT}        - JSON blob of recent RL experiments / backtest context
+#                           Prepended automatically by _build_topic_prompt().
+#                           Do not add a {FIRM_CONTEXT} variable here; it is injected
+#                           at the enriched_topic level, not the template level.
+#
+# Usage (direct ResearchAgent call):
+#   report = await agent.scan_crypto_project(
+#       ticker="HYPE",
+#       whitepaper_url="https://hyperliquid.xyz/whitepaper.pdf",
+#       on_chain_context={
+#           "tvl_usd": 2_400_000_000,
+#           "30d_volume_usd": 18_700_000_000,
+#           "protocol_type": "perp_dex",
+#           "token_supply": 1_000_000_000,
+#           "circulating_supply_pct": 32.4,
+#       },
+#   )
+#
+# Usage (direct topic string, for manual /researchclaw:run invocation):
+#   Render the `topic` key below and pass as --topic to AutoResearchClaw.
+# ===========================================
+
+meta:
+  template_id: "crypto_project_scan_v1"
+  mode: "project_audit"
+  version: "1.0.0"
+  min_quality_score: 3.5
+  gate_5_required: true    # literature quality review — NEVER bypass
+  gate_9_required: true    # experiment design review
+  gate_20_required: true   # final paper quality review
+  experiment_mode: "simulated"
+  output_artifacts:
+    - "synthesis.json"     # -> ProjectReport (primary)
+    - "paper.pdf"          # -> logs/research/artifacts/{job_id}/paper.pdf
+    - "citations.bib"      # -> referenced by ProjectReport.citations
+    - "hypotheses.json"    # -> HypothesisSet (secondary; may be empty for PROJECT_AUDIT)
+
+# ---------------------------------------------------------------------------
+# topic: The main research question passed to AutoResearchClaw stage 1.
+# This is the string _format_project_audit_topic() constructs programmatically.
+# The template here documents the canonical structure and serves as the
+# reference for manual invocations via /researchclaw:run.
+# ---------------------------------------------------------------------------
+topic: |
+  Comprehensive due diligence research report for the '{TICKER}' cryptocurrency
+  project. Scope: tokenomics design, competitive landscape analysis, DeFi
+  integration risk, and on-chain health indicators.
+  {WHITEPAPER_URL_LINE}
+  {ON_CHAIN_CONTEXT_LINE}
+
+# Rendered examples (for documentation and manual use):
+topic_examples:
+  - ticker: "HYPE"
+    whitepaper_url: "https://hyperliquid.xyz/whitepaper.pdf"
+    rendered: >
+      Comprehensive due diligence research report for the 'HYPE' cryptocurrency
+      project. Scope: tokenomics design, competitive landscape analysis, DeFi
+      integration risk, and on-chain health indicators.
+      Primary source: https://hyperliquid.xyz/whitepaper.pdf
+      On-chain context (pre-processed): {"tvl_usd":2400000000,"30d_volume_usd":18700000000,"protocol_type":"perp_dex","token_supply":1000000000,"circulating_supply_pct":32.4}
+
+  - ticker: "BTC"
+    whitepaper_url: null
+    rendered: >
+      Comprehensive due diligence research report for the 'BTC' cryptocurrency
+      project. Scope: tokenomics design, competitive landscape analysis, DeFi
+      integration risk, and on-chain health indicators.
+
+# ---------------------------------------------------------------------------
+# system_prompt: The system-level instruction sent to the LLM at Stage 1
+# (Research Scoping) of the AutoResearchClaw pipeline.
+# In ACP mode this is the openclaw agent's system context for the job.
+# ---------------------------------------------------------------------------
+system_prompt: |
+  You are a senior crypto research analyst embedded in an institutional-grade
+  autonomous trading firm operating on HyperLiquid perpetual futures. Your role
+  is to produce evidence-based due diligence reports that inform the firm's
+  position-sizing and instrument-selection decisions.
+
+  Research standards:
+  - Distinguish clearly between on-chain observable facts, peer-reviewed
+    evidence, and speculative interpretation. Label each claim accordingly.
+  - Prefer primary sources: official protocol documentation, audited smart
+    contract reports, on-chain data (Dune Analytics, DeFiLlama, Token Terminal),
+    and academic literature on mechanism design and token economics.
+  - Do not rely on unverified social media takes, influencer commentary, or
+    price-predictive assertions.
+  - All findings must map to a concrete trading-firm decision context:
+    instrument eligibility, position sizing limits, or risk flags.
+  - If evidence is insufficient to support a finding, state so explicitly.
+    "Insufficient evidence" is a valid and preferred output over speculation.
+
+  Safety constraints:
+  - This report is a READ-ONLY research artifact. It does not authorise any
+    trade, position change, or strategy parameter modification. All findings
+    require explicit human review and approval before operational use.
+  - Do not include private keys, API credentials, wallet addresses, or any
+    operational infrastructure details in the output.
+
+# ---------------------------------------------------------------------------
+# scope: Research scope definition for Stage 1 (Research Scoping).
+# AutoResearchClaw uses this to bound the literature search and experiment
+# design in Stages 2-9.
+# ---------------------------------------------------------------------------
+scope:
+  primary_dimensions:
+    - id: "tokenomics"
+      description: >
+        Analyse the token supply schedule, emission mechanics, vesting cliffs,
+        inflation/deflation design, fee capture and distribution model, and
+        treasury governance. Assess whether the token design creates sustainable
+        demand or structural sell pressure. Map vesting unlock events to calendar
+        dates where disclosed.
+      output_field: "tokenomics"  # -> ProjectReport.tokenomics
+
+    - id: "competitive_landscape"
+      description: >
+        Identify the project's primary competitor set within its protocol
+        category (e.g. perp DEX, L1/L2, lending, LSD, RWA). Compare on:
+        TVL, 30-day volume, fee revenue, unique active addresses, and
+        protocol-specific KPIs. Assess moat quality: network effects,
+        liquidity depth, developer ecosystem, and switching costs.
+        Identify the top 2-3 structural threats to the project's market
+        position within a 12-month horizon.
+      output_field: "competitive_landscape"  # -> ProjectReport.competitive_landscape
+
+    - id: "defi_integration_risks"
+      description: >
+        Identify and assess risks arising from the project's DeFi integrations:
+        smart contract dependencies, oracle reliance (Chainlink, Pyth, TWAP
+        manipulability), bridge security, governance attack surface, and
+        liquidity concentration risk. Reference any prior audit findings
+        (Certik, Trail of Bits, OpenZeppelin, Spearbit, etc.) and unresolved
+        critical/high findings. Assess counterparty risk from protocol
+        partnerships and LP incentive sustainability.
+      output_field: "defi_integration_risks"  # -> ProjectReport.defi_integration_risks
+
+    - id: "on_chain_health"
+      description: >
+        Evaluate on-chain health using available metrics: holder concentration
+        (top-10 / top-100 wallet share), staking/lock ratios, protocol revenue
+        vs. token incentive cost ratio (P/F ratio), active address trend
+        (90-day), and cross-chain bridge flow direction. Flag any anomalous
+        wallet behaviour, wash trading indicators, or governance concentration.
+      output_field: "summary"  # contributes to ProjectReport.summary
+
+  out_of_scope:
+    - Price prediction or target-price analysis
+    - Tax treatment or legal classification
+    - Any claim requiring real-time data not present in provided on-chain context
+    - Social sentiment scores from unverified sources
+
+# ---------------------------------------------------------------------------
+# literature_search: Stage 2-4 search configuration.
+# Sources are constrained to AutoResearchClaw's supported backends.
+# Crypto-specific sources (DeFiLlama, Messari, Dune) must be pre-processed
+# into on_chain_context before pipeline invocation (see scan_crypto_project()).
+# ---------------------------------------------------------------------------
+literature_search:
+  sources:
+    - arxiv          # mechanism design, token economics, AMM theory, DeFi security
+    - semantic_scholar
+    - openAlex
+  # Custom pre-processed sources injected via ON_CHAIN_CONTEXT_LINE in topic:
+  #   - DeFiLlama     (TVL, protocol revenue, chain breakdown)
+  #   - Messari       (token supply, vesting, governance)
+  #   - Token Terminal (P/F ratios, user metrics)
+  #   - Dune Analytics (on-chain query results — export CSV before invocation)
+  priority_keywords:
+    - "{TICKER} tokenomics"
+    - "{TICKER} mechanism design"
+    - "{TICKER} smart contract audit"
+    - "perpetual DEX token design"
+    - "DeFi protocol competitive moat"
+    - "token vesting unlock sell pressure"
+    - "oracle manipulation DeFi"
+    - "governance attack vector"
+    - "liquidity mining sustainability"
+  max_papers: 40
+  min_citation_year: 2020   # Focus on post-DeFi-summer literature
+
+# ---------------------------------------------------------------------------
+# experiment_design: Stage 5-9 configuration.
+# mode: simulated — no code execution required for a due diligence scan.
+# For quantitative stress-testing (e.g. unlock impact modelling), switch
+# to mode: sandbox and provide a Python experiment spec below.
+# ---------------------------------------------------------------------------
+experiment_design:
+  mode: "simulated"   # overrides bridge config experiment.mode for this template
+  # Simulated mode: AutoResearchClaw synthesises findings from literature
+  # and the provided on-chain context. No code is executed.
+  #
+  # To enable quantitative modelling (requires sandbox mode + Docker):
+  #   mode: "sandbox"
+  #   experiment_spec: |
+  #     import pandas as pd
+  #     # Load on_chain_context from context JSON
+  #     # Model vesting unlock sell pressure
+  #     # Output: unlock_impact_df.csv
+
+# ---------------------------------------------------------------------------
+# output_schema: Defines the expected synthesis.json structure consumed by
+# _parse_project_report() in research_agent.py.
+# AutoResearchClaw Stage 22 (paper writing) must produce a synthesis.json
+# conforming to this schema for ProjectReport deserialisation to succeed.
+# ---------------------------------------------------------------------------
+output_schema:
+  synthesis_json:
+    ticker:
+      type: string
+      description: "Asset ticker symbol. Must match the input ticker exactly."
+      example: "HYPE"
+    summary:
+      type: string
+      description: >
+        Plain-language executive summary (300-500 words). Must cover:
+        protocol overview, primary competitive position, top 3 risk flags,
+        and a single-sentence trading-firm relevance statement.
+    tokenomics:
+      type: object
+      description: "Tokenomics analysis findings."
+      fields:
+        supply_schedule: string
+        emission_type: "inflationary | deflationary | fixed"
+        fee_capture_model: string
+        vesting_unlocks:
+          type: list
+          items:
+            date: string      # ISO-8601
+            amount_tokens: number
+            recipient_class: string  # e.g. "team", "investors", "ecosystem"
+        structural_sell_pressure_assessment: string  # "low | medium | high + rationale"
+    competitive_landscape:
+      type: object
+      fields:
+        category: string      # e.g. "perp_dex", "l2", "lending"
+        competitors:
+          type: list
+          items:
+            name: string
+            tvl_usd: number
+            30d_volume_usd: number
+            key_differentiator: string
+        moat_assessment: string
+        top_threats:
+          type: list
+          items:
+            threat: string
+            horizon_months: number
+    defi_integration_risks:
+      type: object
+      fields:
+        audit_history:
+          type: list
+          items:
+            auditor: string
+            date: string
+            critical_findings: number
+            high_findings: number
+            unresolved: boolean
+        oracle_dependencies:
+          type: list
+          items:
+            provider: string
+            manipulability_risk: "low | medium | high"
+        bridge_risk_level: "none | low | medium | high"
+        governance_attack_surface: string
+        overall_risk_level: "low | medium | high | critical"
+    citations:
+      type: list
+      description: "BibTeX-style citation dicts from AutoResearchClaw Stage 15."
+      items:
+        key: string
+        title: string
+        authors: list
+        year: number
+        url: string
+    quality_score:
+      type: number
+      description: "AutoResearchClaw quality score (0-5). Populated at Stage 20."
+      minimum: 0.0
+      maximum: 5.0
+
+# ---------------------------------------------------------------------------
+# quality_gates: Criteria for each human gate review.
+# These are informational checklists for the human reviewer.
+# Gate approval is performed via the dashboard or /researchclaw:resume.
+# ---------------------------------------------------------------------------
+quality_gates:
+  stage_5_literature_review:
+    description: "Review retrieved literature before synthesis begins."
+    checklist:
+      - "Are the retrieved papers relevant to the specific project and category?"
+      - "Are primary sources (whitepaper, audit reports) included if a URL was provided?"
+      - "Is the citation count sufficient for the scope (target: 15+ relevant papers)?"
+      - "Are there any obviously fabricated or hallucinated citations? (Check DOIs/URLs)"
+      - "Does the on-chain context data appear to have been incorporated correctly?"
+    reject_criteria:
+      - "Fewer than 8 relevant papers retrieved"
+      - "Whitepaper URL provided but not included in literature"
+      - "Any fabricated citation detected"
+
+  stage_9_experiment_design:
+    description: "Review experiment design before execution (simulated or sandbox)."
+    checklist:
+      - "Does the experiment scope match the four primary dimensions defined above?"
+      - "For simulated mode: is the synthesis plan coherent given retrieved literature?"
+      - "Are there any out-of-scope claims (price prediction, legal classification)?"
+    reject_criteria:
+      - "Experiment attempts to write to strategy/, agent/, or apps/executors/"
+      - "Price target or buy/sell recommendation present in experiment plan"
+
+  stage_20_final_quality:
+    description: "Final review before synthesis.json and paper.pdf are written."
+    checklist:
+      - "Does the summary (300-500 words) cover all four primary dimensions?"
+      - "Is each finding labelled as fact, inference, or speculation?"
+      - "Are all tokenomics.vesting_unlocks entries sourced (not estimated)?"
+      - "Is defi_integration_risks.overall_risk_level justified by evidence?"
+      - "Is quality_score >= 3.5? (below threshold: reject and request revision)"
+      - "Are all citations resolvable (DOI, URL, or known academic venue)?"
+    reject_criteria:
+      - "quality_score < 3.5"
+      - "Missing any of the four primary dimension sections"
+      - "Price prediction present anywhere in the report"
+      - "Unresolved critical/high audit findings not mentioned in defi_integration_risks"
+
+# ---------------------------------------------------------------------------
+# downstream_consumers: Documents how ProjectReport fields are used by the
+# trading firm after synthesis.json is parsed.
+# All consumption is READ-ONLY. No field directly modifies a strategy config.
+# ---------------------------------------------------------------------------
+downstream_consumers:
+  dashboard_research_panel:
+    consumes:
+      - summary
+      - competitive_landscape.moat_assessment
+      - defi_integration_risks.overall_risk_level
+      - quality_score
+    display: "Research panel — Project Audit card"
+
+  instrument_eligibility_review:
+    consumes:
+      - defi_integration_risks.overall_risk_level
+      - tokenomics.structural_sell_pressure_assessment
+    gate: "Human approval required before any eligibility change"
+    note: >
+      If overall_risk_level == 'critical', the instrument is flagged for human
+      review in the risk council. The ResearchAgent does NOT automatically
+      delist or restrict instruments.
+
+  iteration_loop_context:
+    consumes:
+      - tokenomics
+      - competitive_landscape.top_threats
+    gate: "HypothesisSet.approved must be True (set by human via dashboard)"
+    note: >
+      Hypothesis proposals derived from PROJECT_AUDIT jobs are READ-ONLY until
+      a human explicitly approves them via the dashboard research panel.
+      research_agent.py never promotes hypotheses automatically.
