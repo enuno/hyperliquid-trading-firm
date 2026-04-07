@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "skills": {
+    "Bankr Agent - Agent Profiles": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "cdaf67174ccf9b07d93d6e1aa84047b1b9fbae1f061a9820b3d509570d67e8b0"
+    },
+    "Bankr Agent - Arbitrary Transactions": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "fe30fd8d25efd2ba95d1039970b02aa4b783567d8aba530a2f7ac4eeb53bdb6a"
+    },
+    "Bankr Agent - Automation": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "aa2ea807585d31c1ad56ab00153488f25c37ab7466a3d0b73df02e343ee681fb"
+    },
+    "Bankr Agent - Error Handling": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "aa1b2fbe3cf7b5973f33800b27487e48c39bb296af7d1fbc444714d286359ec0"
+    },
+    "Bankr Agent - Job Workflow": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "eaa7a62f577686e4c88aad8455c47cc3b1ea16a67e0ae1deea005a6a05593a62"
+    },
+    "Bankr Agent - LLM Gateway": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "2cfe3021f68d1796169e126d8c9b9db9497bc2ad2b355bb1811ec22e5be62a5f"
+    },
+    "Bankr Agent - Leverage Trading": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "5b4ac7c225e5088e52a6aad32fec446e386b453cb9ba8cb91e37947e81793fff"
+    },
+    "Bankr Agent - Market Research": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "d13c450ca2b2a6e583a85cd6cdf04be135a783a1ff1a59330704d4a0f76b4927"
+    },
+    "Bankr Agent - NFT Operations": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "ca5560be80fde3acb165e810ab3d6fa08cdd5fa3d359b527d7977b551779391b"
+    },
+    "Bankr Agent - Polymarket": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "a2e77c9fd53da699fcf74bf033b75fc616fa046eaa6261a83ca79bb3e13b6519"
+    },
+    "Bankr Agent - Portfolio": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "7eab8e7cb38c192685f81e30624842c8d868f8c23292c3deff24eddd7bc9e143"
+    },
+    "Bankr Agent - Safety & Access Control": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "309a8c90a6725a45d017cf4dddab98dd7b8b1cde30f62c8697efeae5bbecaf89"
+    },
+    "Bankr Agent - Sign & Submit API": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "2abbc4ff484f6334105c957b7bcd23a8514eabbf8415e0bd3e100910852ab053"
+    },
+    "Bankr Agent - Token Deployment": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "cc8fbdda3ffc096df1f89dad27e4f318d8161ea0a5d4e9e730f06e164dcc35b6"
+    },
+    "Bankr Agent - Token Trading": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "3b3df54666d0efbb2d96b379f0fdb41b5103d00cf9d4b419963c6ff63c31f24c"
+    },
+    "Bankr Agent - Transfers": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "eb8536c625e1dcc3e2e02b8e1ee62450595859d6c08837f0519592a0b24e3a48"
+    },
+    "Bankr Dev - API Basics": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "6507b1af913b684e1d6f2745c9b2803537d2c9682f94bab8ecaec22bbf62628d"
+    },
+    "Bankr Dev - API Workflow": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "530969f0f9cd3f8323ee853db5dc44428eee8692f9c8cb43d374aab260860086"
+    },
+    "Bankr Dev - Arbitrary Transactions": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "227ae98c3fbe4ec2a9f22f66c1c3dca0342dc9ea4898a62b44f1f4d7660440a9"
+    },
+    "Bankr Dev - Automation": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "2fa595aa29677c6e7454f74eb825777d2b0177679f3c6d84cd1d9163cae2407b"
+    },
+    "Bankr Dev - Client Patterns": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "025d6633f9b1f083b48b6b2c3f2998a5bfb9a76c68a61757fe3ca53a657068ed"
+    },
+    "Bankr Dev - Leverage Trading": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "0c59e065b1f07633b16264967ce26848d9036a9210997ad43d08dcfb30a070e3"
+    },
+    "Bankr Dev - Market Research": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "813902c1861fc0233d12088abbff5f4cbbe4964d10dd79db8afd7a64d357a90a"
+    },
+    "Bankr Dev - NFT Operations": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "5a2f47032ef111964a4760edd145f82263af870cd0fac763930eef18abecb430"
+    },
+    "Bankr Dev - Polymarket": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "310706af20dd4d41c3e31e28cecf2a1a4e1c10603bb9279973dafce0b3f314e3"
+    },
+    "Bankr Dev - Portfolio": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "68fd5eab390cc8b1f1044d24551e250c13c80a6bea56b3dac186f6308df2458b"
+    },
+    "Bankr Dev - Project Templates": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "5c659ac165feb4a7731adbe153aa2f5719659881f66798a05a8a9221843c7aa5"
+    },
+    "Bankr Dev - Safety & Access Control": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "a768fc1664065ee54b7b11d702b71d8f33ffefdb8d0127e071291430601cb32b"
+    },
+    "Bankr Dev - Sign & Submit API": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "e3aff8c8022bc2887ddafc82e30b943accbdc7efd2bffd222a64cbd4f7045f6d"
+    },
+    "Bankr Dev - Token Deployment": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "6e478e268de6d6edec8ad74bfcacdb592cd85dddccc6ebec8032e92538dc9ccd"
+    },
+    "Bankr Dev - Token Trading": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "bf00b500f6c95218949430dfaeeaa91b00dd12c41f2d1ecf37da9de277831719"
+    },
+    "Bankr Dev - Transfers": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "f11fc1470818fc2ac6b709fc6f544c22d3f1285ec74b07a80aa3f328cf4ba2b2"
+    },
+    "Bankr x402 SDK - Balance Queries": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "50fff43393c5c184dd3513a4530f767fc3a5b2a86003ab7daa705cd89ef49242"
+    },
+    "Bankr x402 SDK - Capabilities": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "178fe2a321b636b255a26484efc36c4dd7f5b70cf32b6a28de1e8cc9f022e033"
+    },
+    "Bankr x402 SDK - Client Patterns": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "4581f81b8adc2efb5bf70becdde78fc80cd18ee118d6a05c13216228a69841f0"
+    },
+    "Bankr x402 SDK - Job Management": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "75bff9f7ded848ae86401026b2e5ac65e000d0a7ada45d51f669badbcf8a4f5d"
+    },
+    "Bankr x402 SDK - Project Templates": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "a67f100c245e71bf1b58976099ee4c36458c325113c2c84027d394673e6324a2"
+    },
+    "Bankr x402 SDK - Token Swaps": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "c6cf3de9b1880f053b1b4c84682de346376149d3a5cd1e26150041fb7665902e"
+    },
+    "Bankr x402 SDK - Transaction Builder": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "223b4a3ff51c6b08bcec32bdff64dac65dd1cf6b97cd4a66443767f5a93b2979"
+    },
+    "Bankr x402 SDK - Wallet Operations": {
+      "source": "BankrBot/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "312a95d129340c6af471189dc8793dfee83df58801d98434e5333c78ed720721"
+    },
+    "hyperliquid": {
+      "source": "dwellir-public/hyperliquid-skills",
+      "sourceType": "github",
+      "computedHash": "9d116351a4dd89cde41ff0d9cc663b346f1956f9f45b347cfb4390da3ba64fdd"
+    }
+  }
+}

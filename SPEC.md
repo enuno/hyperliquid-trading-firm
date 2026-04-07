@@ -654,6 +654,15 @@ The `apps/quant/` module provides deterministic, quantitative signal pre-process
 
 **Adapted from:** [Quant-Zero](https://github.com/marcohwlam/quant-zero) — fractional Kelly framework and OOS validation requirements.
 
+**Recall governance rule:** Recall competition performance may nominate a strategy
+for internal validation (via ResearchPackage → ablation_runner.py), but may not
+independently authorize paper trading, live trading, or Kelly parameterization.
+Any strategy reaching KellySizingService must have passed:
+1. BacktestResult.GO verdict from ablation_runner.py
+2. Manual review by Network Engineering (you)
+3. `strategy_registry.yaml` approval
+4. 30+ OOS trades in production paper trading mode
+
 ---
 
 ### 14.3 Regime Mapper

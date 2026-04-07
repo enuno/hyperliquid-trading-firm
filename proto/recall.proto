@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package recall;
+
+// Recall Network data ingestion proto schema.
+// Provides typed structure for competitions, agents, snapshots, and
+// downstream MarketIntelligenceSifter → ResearchPackage pipeline.
+// All timestamps are UTC. All IDs are strings. All floats are double.
+// Nullability preserved via optional fields.
+
+option java_package = "com.enuno.hyperliquid.recall";
+option go_package = "github.com/enuno/hyperliquid-trading-firm/proto/recall";
+
+// ---------------------------------------------------------------------------
+// Core entities
+// ---------------------------------------------------------------------------
+
+message Competition {
+  string id = 1;                    // Recall competition ID
+  string name
