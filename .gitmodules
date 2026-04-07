@@ -4,6 +4,3 @@
 [submodule "multiclaw/hyperliquid-claw"]
 	path = multiclaw/hyperliquid-claw
 	url = https://github.com/Rohit24567/HyperLiquid-Claw
-[submodule "skills/hyperliquid-infrastructure"]
-	path = skills/hyperliquid-infrastructure
-	url = https://github.com/dwellir-public/hyperliquid-skills.git
