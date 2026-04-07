@@ -1,0 +1,826 @@
+# prompts/research/strategy_evaluation.yaml
+# ==========================================
+# Prompt template for ResearchAgent STRATEGY_SCAN jobs.
+#
+# Used by: apps/agents/src/agents/research_agent.py
+#   -> get_strategy_evaluation(strategy_class, current_metrics)
+#   -> _format_strategy_scan_topic()
+#
+# Mode: ResearchMode.STRATEGY_SCAN
+# Gate matrix: Stage 5 = true (literature review — NEVER bypass)
+#              Stage 9 = false (auto-approved)
+#              Stage 20 = false (auto-approved)
+#
+# Rationale for gate matrix:
+#   Stage 5 is the primary anti-fabrication gate. For strategy research, a
+#   fabricated citation on a parameter recommendation could propagate directly
+#   into the iteration loop. Stage 5 MUST always be human-reviewed.
+#   Stages 9 and 20 are auto-approved to reduce analyst overhead for the
+#   high-frequency strategy improvement use case — analysts will run STRATEGY_SCAN
+#   jobs regularly as part of the strategy development cycle.
+#
+# Output artifacts consumed by:
+#   _parse_hypothesis_set() -> HypothesisSet -> list[Hypothesis]
+#   hypotheses.json fields: hypotheses[], citations[], quality_score
+#   Hypothesis fields: statement, confidence, parameter_suggestions, supporting_citations
+#
+# Template variables (injected by _format_strategy_scan_topic):
+#   {STRATEGY_CLASS}        - Strategy class name (e.g. "ema_cross", "rsi_reversal")
+#   {SHARPE}                - Annualised Sharpe ratio (2 decimal places)
+#   {MAX_DRAWDOWN_PCT}      - Max drawdown % (1 decimal place, positive = loss)
+#   {WIN_RATE_PCT}          - Win rate % (1 decimal place)
+#   {REGIME_LABEL}          - Current regime classifier output string
+#   {ANNUALISED_RETURN_PCT} - Optional annualised return % (may be omitted)
+#   {SORTINO}               - Optional Sortino ratio (may be omitted)
+#   {CALMAR}                - Optional Calmar ratio (may be omitted)
+#
+# The topic string produced by _format_strategy_scan_topic() is:
+#   "Literature review and improvement hypotheses for the '{STRATEGY_CLASS}'
+#    trading strategy on HyperLiquid perpetual futures.
+#    Current performance: Sharpe {SHARPE}, max drawdown {MAX_DRAWDOWN_PCT}%,
+#    win rate {WIN_RATE_PCT}%, regime: {REGIME_LABEL}.
+#    Focus: identify failure modes in this regime and surface academic evidence
+#    for parameter adjustments, signal enhancements, or complementary filters
+#    that improve risk-adjusted returns without increasing leverage."
+#
+# Usage:
+#   hypothesis_set = await agent.get_strategy_evaluation(
+#       strategy_class="ema_cross",
+#       current_metrics=StrategyMetrics(
+#           sharpe=0.82,
+#           max_drawdown_pct=8.4,
+#           win_rate_pct=51.3,
+#           regime_label="ranging_low_vol",
+#           annualised_return_pct=34.1,
+#           sortino=1.14,
+#           calmar=4.06,
+#       ),
+#   )
+# ==========================================
+
+meta:
+  template_id: "strategy_evaluation_v1"
+  mode: "strategy_scan"
+  version: "1.0.0"
+  min_quality_score: 3.5
+  gate_5_required: true     # Literature quality review — NEVER bypass (anti-fabrication)
+  gate_9_required: false    # Auto-approved: experiment design for lit synthesis is low-risk
+  gate_20_required: false   # Auto-approved: final quality checked via quality_score threshold
+  experiment_mode: "simulated"
+  output_artifacts:
+    - "hypotheses.json"     # -> HypothesisSet (primary consumer)
+    - "citations.bib"       # -> Hypothesis.supporting_citations keys resolved here
+    - "paper.pdf"           # -> retained in artifact registry for analyst reference
+    # synthesis.json is NOT the primary artifact for STRATEGY_SCAN.
+    # hypotheses.json is the structured output; paper.pdf is the narrative form.
+
+# ---------------------------------------------------------------------------
+# topic: Canonical topic string matching _format_strategy_scan_topic() exactly.
+# The Python function constructs this string programmatically from StrategyMetrics.
+# This template documents the canonical structure for manual invocations.
+# ---------------------------------------------------------------------------
+topic: |
+  Literature review and improvement hypotheses for the '{STRATEGY_CLASS}'
+  trading strategy on HyperLiquid perpetual futures.
+  Current performance: Sharpe {SHARPE}, max drawdown {MAX_DRAWDOWN_PCT}%,
+  win rate {WIN_RATE_PCT}%, regime: {REGIME_LABEL}.
+  Focus: identify failure modes in this regime and surface academic evidence
+  for parameter adjustments, signal enhancements, or complementary filters
+  that improve risk-adjusted returns without increasing leverage.
+
+# Rendered examples covering each major performance failure mode:
+topic_examples:
+
+  - strategy_class: "ema_cross"
+    failure_mode: "low_sharpe_ranging_regime"
+    metrics:
+      sharpe: 0.82
+      max_drawdown_pct: 8.4
+      win_rate_pct: 51.3
+      regime_label: "ranging_low_vol"
+    rendered: >
+      Literature review and improvement hypotheses for the 'ema_cross' trading
+      strategy on HyperLiquid perpetual futures.
+      Current performance: Sharpe 0.82, max drawdown 8.4%, win rate 51.3%,
+      regime: ranging_low_vol.
+      Focus: identify failure modes in this regime and surface academic evidence
+      for parameter adjustments, signal enhancements, or complementary filters
+      that improve risk-adjusted returns without increasing leverage.
+
+  - strategy_class: "rsi_reversal"
+    failure_mode: "high_drawdown_trending_bear"
+    metrics:
+      sharpe: -0.31
+      max_drawdown_pct: 22.7
+      win_rate_pct: 44.1
+      regime_label: "trending_bear"
+    rendered: >
+      Literature review and improvement hypotheses for the 'rsi_reversal' trading
+      strategy on HyperLiquid perpetual futures.
+      Current performance: Sharpe -0.31, max drawdown 22.7%, win rate 44.1%,
+      regime: trending_bear.
+      Focus: identify failure modes in this regime and surface academic evidence
+      for parameter adjustments, signal enhancements, or complementary filters
+      that improve risk-adjusted returns without increasing leverage.
+
+  - strategy_class: "funding_rate_carry"
+    failure_mode: "carry_unwind_high_funding"
+    metrics:
+      sharpe: 1.24
+      max_drawdown_pct: 5.1
+      win_rate_pct: 68.2
+      regime_label: "high_funding_contango"
+    rendered: >
+      Literature review and improvement hypotheses for the 'funding_rate_carry'
+      trading strategy on HyperLiquid perpetual futures.
+      Current performance: Sharpe 1.24, max drawdown 5.1%, win rate 68.2%,
+      regime: high_funding_contango.
+      Focus: identify failure modes in this regime and surface academic evidence
+      for parameter adjustments, signal enhancements, or complementary filters
+      that improve risk-adjusted returns without increasing leverage.
+
+  - strategy_class: "hyperliquid_perps_meta"
+    failure_mode: "high_vol_degradation"
+    metrics:
+      sharpe: 0.44
+      max_drawdown_pct: 14.2
+      win_rate_pct: 48.8
+      regime_label: "high_vol_trending"
+    rendered: >
+      Literature review and improvement hypotheses for the 'hyperliquid_perps_meta'
+      trading strategy on HyperLiquid perpetual futures.
+      Current performance: Sharpe 0.44, max drawdown 14.2%, win rate 48.8%,
+      regime: high_vol_trending.
+      Focus: identify failure modes in this regime and surface academic evidence
+      for parameter adjustments, signal enhancements, or complementary filters
+      that improve risk-adjusted returns without increasing leverage.
+
+# ---------------------------------------------------------------------------
+# strategy_taxonomy: Canonical strategy class registry.
+# Maps each strategy_class string to its signal family, known failure modes,
+# and the StrategyConfig parameter keys that hypothesis parameter_suggestions
+# should reference. parameter_suggestions keys MUST match StrategyConfig fields
+# to be consumable by the iteration loop.
+#
+# To add a new strategy class: extend this list and add matching StrategyConfig
+# fields in config/strategies/{strategy_class}.yaml before running STRATEGY_SCAN.
+# ---------------------------------------------------------------------------
+strategy_taxonomy:
+
+  ema_cross:
+    family: "momentum / trend_following"
+    description: "Dual EMA crossover signal with ATR-based stop-loss."
+    signal_inputs: ["price_ohlcv", "volume"]
+    known_failure_modes:
+      - "Whipsaw losses in low-volatility ranging regimes"
+      - "Signal lag in fast-moving trending regimes (late entry, late exit)"
+      - "Stop-loss clustering near ATR multiples triggering cascades"
+    strategy_config_params:
+      fast_ema_period:
+        type: integer
+        range: [5, 50]
+        description: "Fast EMA lookback period in bars"
+      slow_ema_period:
+        type: integer
+        range: [20, 200]
+        description: "Slow EMA lookback period in bars"
+      atr_stop_multiplier:
+        type: float
+        range: [1.0, 4.0]
+        description: "ATR multiplier for stop-loss distance"
+      min_vol_filter_atr:
+        type: float
+        range: [0.001, 0.05]
+        description: "Minimum ATR threshold to enter (filters ranging regimes)"
+      position_size_fraction:
+        type: float
+        range: [0.01, 0.20]
+        description: "Notional fraction of portfolio per trade"
+    regime_sensitivity:
+      ranging_low_vol: "high_degradation"
+      trending_bull: "optimal"
+      trending_bear: "moderate — short-side lag"
+      high_vol_trending: "moderate — whipsaw at reversal points"
+
+  rsi_reversal:
+    family: "mean_reversion"
+    description: "RSI overbought/oversold mean-reversion with momentum filter."
+    signal_inputs: ["price_ohlcv", "rsi", "volume_profile"]
+    known_failure_modes:
+      - "RSI stays in extreme territory during strong trends (trending_bear/bull)"
+      - "Oversold signals fail in liquidation cascade regimes"
+      - "Win rate degrades sharply above 20% realized volatility"
+    strategy_config_params:
+      rsi_period:
+        type: integer
+        range: [7, 28]
+        description: "RSI lookback period in bars"
+      oversold_threshold:
+        type: integer
+        range: [20, 35]
+        description: "RSI level triggering long entry"
+      overbought_threshold:
+        type: integer
+        range: [65, 80]
+        description: "RSI level triggering short entry"
+      momentum_filter_period:
+        type: integer
+        range: [20, 100]
+        description: "EMA period for trend filter (only trade reversals against trend if > 0)"
+      max_vol_filter_rv:
+        type: float
+        range: [0.10, 0.60]
+        description: "Max realized vol threshold — disable strategy above this level"
+      position_size_fraction:
+        type: float
+        range: [0.01, 0.15]
+        description: "Notional fraction of portfolio per trade"
+    regime_sensitivity:
+      ranging_low_vol: "optimal"
+      trending_bull: "high_degradation"
+      trending_bear: "high_degradation"
+      liquidation_cascade_risk: "disabled_recommended"
+
+  funding_rate_carry:
+    family: "carry / basis"
+    description: "Long spot / short perp carry trade harvesting elevated funding rates."
+    signal_inputs: ["funding_rate", "basis_spread", "open_interest", "price_ohlcv"]
+    known_failure_modes:
+      - "Carry unwind speed: funding flips from +0.01% to -0.02% within one session"
+      - "Basis spread widening during exchange stress events"
+      - "Strategy crowding at extreme funding — simultaneous unwind amplifies losses"
+      - "Hedge slippage exceeds carry when perp liquidity thins"
+    strategy_config_params:
+      min_funding_rate_entry:
+        type: float
+        range: [0.0010, 0.0150]
+        description: "Minimum 8h funding rate to open carry position"
+      funding_rate_exit_threshold:
+        type: float
+        range: [0.0001, 0.0020]
+        description: "Funding rate below which carry position is closed"
+      max_basis_spread_entry:
+        type: float
+        range: [0.0005, 0.0050]
+        description: "Maximum basis spread at entry (filters illiquid conditions)"
+      carry_lookback_ewm_periods:
+        type: integer
+        range: [4, 48]
+        description: "EWM lookback periods for funding rate smoothing"
+      max_position_size_fraction:
+        type: float
+        range: [0.05, 0.40]
+        description: "Max notional fraction for combined spot+perp position"
+      unwind_speed_stop_pct:
+        type: float
+        range: [0.30, 2.00]
+        description: "% basis adverse move triggering emergency unwind"
+    regime_sensitivity:
+      high_funding_contango: "optimal — but crowding risk elevated"
+      high_funding_backwardation: "inverse carry (short spot / long perp) variant"
+      ranging_low_vol: "marginal — low funding reduces carry yield"
+      liquidation_cascade_risk: "disabled_recommended — basis blows out"
+
+  breakout_vol_expansion:
+    family: "breakout / volatility_expansion"
+    description: "Bollinger Band / Keltner Channel breakout with vol expansion confirmation."
+    signal_inputs: ["price_ohlcv", "bollinger_bands", "keltner_channel", "atr", "volume"]
+    known_failure_modes:
+      - "False breakouts in ranging regimes (BB squeeze followed by reversion)"
+      - "Breakout entry immediately after news spike (unfillable at signal price)"
+      - "ATR-based sizing inflates risk exactly when vol is highest"
+    strategy_config_params:
+      bb_period:
+        type: integer
+        range: [10, 30]
+        description: "Bollinger Band lookback period"
+      bb_std_multiplier:
+        type: float
+        range: [1.5, 3.0]
+        description: "Standard deviation multiplier for band width"
+      vol_expansion_atr_ratio:
+        type: float
+        range: [1.1, 2.5]
+        description: "Current ATR / rolling ATR ratio confirming vol expansion"
+      volume_confirmation_ratio:
+        type: float
+        range: [1.2, 3.0]
+        description: "Current volume / avg volume confirming breakout"
+      false_breakout_reentry_bars:
+        type: integer
+        range: [1, 10]
+        description: "Bars to wait before re-entering after a false breakout"
+      position_size_fraction:
+        type: float
+        range: [0.01, 0.15]
+      regime_sensitivity:
+        ranging_low_vol: "high_degradation — BB squeezes produce false signals"
+        high_vol_trending: "optimal"
+        liquidation_cascade_risk: "high_degradation — vol spike invalidates sizing"
+
+  order_flow_imbalance:
+    family: "order_flow / microstructure"
+    description: "Trade-side imbalance signal from HyperLiquid L2 order book snapshots."
+    signal_inputs: ["l2_order_book", "trade_tape", "open_interest_delta", "funding_rate"]
+    known_failure_modes:
+      - "Signal degrades when HyperLiquid vault liquidity dominates passive side"
+      - "Imbalance persistence shortens sharply above 1.5x realized vol"
+      - "Latency sensitivity: edge evaporates beyond ~200ms execution lag"
+    strategy_config_params:
+      imbalance_lookback_ticks:
+        type: integer
+        range: [50, 500]
+        description: "Number of ticks in rolling imbalance window"
+      imbalance_threshold_long:
+        type: float
+        range: [0.55, 0.80]
+        description: "Buy-side fraction threshold triggering long signal"
+      imbalance_threshold_short:
+        type: float
+        range: [0.20, 0.45]
+        description: "Sell-side fraction threshold triggering short signal"
+      oi_delta_confirmation:
+        type: boolean
+        description: "Require OI delta to confirm direction before entry"
+      max_execution_latency_ms:
+        type: integer
+        range: [50, 500]
+        description: "Abandon signal if execution latency exceeds this threshold"
+      position_size_fraction:
+        type: float
+        range: [0.005, 0.10]
+    regime_sensitivity:
+      ranging_low_vol: "moderate — imbalance signals shorter-lived"
+      high_vol_trending: "optimal — strong directional imbalance"
+      liquidation_cascade_risk: "disabled_recommended — signal noise spikes"
+
+  hyperliquid_perps_meta:
+    family: "meta / ensemble"
+    description: >
+      Ensemble strategy combining EMA cross, RSI reversal, and funding carry
+      signals with regime-conditional weighting. The primary production strategy
+      for HyperLiquid perpetual futures.
+    signal_inputs: ["price_ohlcv", "funding_rate", "rsi", "ema_signals", "regime_label"]
+    known_failure_modes:
+      - "Regime misclassification propagates errors to all sub-signals simultaneously"
+      - "Ensemble weight rebalancing lag during fast regime transitions"
+      - "Correlated sub-signal drawdowns during high_vol regime (not truly diversified)"
+    strategy_config_params:
+      ema_cross_weight:
+        type: float
+        range: [0.0, 1.0]
+        description: "Portfolio weight allocated to ema_cross sub-strategy"
+      rsi_reversal_weight:
+        type: float
+        range: [0.0, 1.0]
+        description: "Portfolio weight allocated to rsi_reversal sub-strategy"
+      funding_carry_weight:
+        type: float
+        range: [0.0, 1.0]
+        description: "Portfolio weight allocated to funding_rate_carry sub-strategy"
+      regime_reweight_smoothing_periods:
+        type: integer
+        range: [1, 20]
+        description: "EWM periods for smoothing regime-triggered weight rebalances"
+      max_single_strategy_weight:
+        type: float
+        range: [0.40, 1.0]
+        description: "Hard cap on any single sub-strategy weight"
+      ensemble_position_size_fraction:
+        type: float
+        range: [0.02, 0.25]
+        description: "Total notional fraction for the combined ensemble position"
+      drawdown_circuit_breaker_pct:
+        type: float
+        range: [3.0, 10.0]
+        description: "Ensemble-level max drawdown % triggering all-flat circuit breaker"
+    regime_sensitivity:
+      all_regimes: "moderate — meta strategy by design; quality depends on regime classifier accuracy"
+
+  momentum_burst:
+    family: "momentum / short_horizon"
+    description: "Short-horizon price momentum on 5m–15m bars with volume surge filter."
+    signal_inputs: ["price_ohlcv_5m", "price_ohlcv_15m", "volume", "trade_count"]
+    known_failure_modes:
+      - "Intraday mean reversion after opening momentum exhaustion"
+      - "High slippage during low-liquidity windows (Asia session altcoin perps)"
+      - "Overfitting to specific volatility regimes in backtests"
+    strategy_config_params:
+      momentum_lookback_bars:
+        type: integer
+        range: [3, 20]
+        description: "Bars for momentum return calculation"
+      volume_surge_ratio:
+        type: float
+        range: [1.5, 5.0]
+        description: "Current volume / rolling avg volume for entry confirmation"
+      momentum_entry_threshold_pct:
+        type: float
+        range: [0.10, 1.00]
+        description: "Minimum % price move in lookback_bars to trigger entry"
+      take_profit_atr_multiplier:
+        type: float
+        range: [0.5, 3.0]
+        description: "ATR multiplier for take-profit target"
+      stop_loss_atr_multiplier:
+        type: float
+        range: [0.3, 2.0]
+        description: "ATR multiplier for stop-loss"
+      session_filter:
+        type: list
+        options: ["all", "london", "new_york", "asia"]
+        description: "Trading session filter (list of active sessions)"
+      position_size_fraction:
+        type: float
+        range: [0.01, 0.10]
+    regime_sensitivity:
+      high_vol_trending: "optimal"
+      ranging_low_vol: "high_degradation"
+      liquidation_cascade_risk: "disabled_recommended"
+
+  stat_arb_basis:
+    family: "statistical_arbitrage / basis"
+    description: "Perpetual/spot basis mean-reversion using cointegration signal."
+    signal_inputs: ["perp_price", "spot_price", "basis_spread", "funding_rate", "volume"]
+    known_failure_modes:
+      - "Cointegration breakdown during protocol-specific stress events"
+      - "Spot-side execution on CEX introduces latency and fee asymmetry"
+      - "Basis spread can widen persistently (non-stationary during risk-off)"
+    strategy_config_params:
+      basis_zscore_entry_threshold:
+        type: float
+        range: [1.5, 3.5]
+        description: "Z-score threshold for basis spread entry signal"
+      basis_zscore_exit_threshold:
+        type: float
+        range: [0.0, 1.0]
+        description: "Z-score level at which basis position is closed"
+      basis_ewm_halflife_periods:
+        type: integer
+        range: [10, 200]
+        description: "EWM half-life for rolling basis mean and std calculation"
+      max_basis_holding_bars:
+        type: integer
+        range: [12, 288]
+        description: "Maximum bars to hold an open basis position before forced exit"
+      cointegration_retest_frequency_hours:
+        type: integer
+        range: [24, 168]
+        description: "Hours between cointegration relationship validity re-tests"
+      position_size_fraction:
+        type: float
+        range: [0.02, 0.30]
+    regime_sensitivity:
+      ranging_low_vol: "optimal"
+      high_funding_contango: "optimal — basis spread predictable"
+      liquidation_cascade_risk: "disabled_recommended — basis non-stationary"
+      trending_bear: "high_degradation — basis widens persistently"
+
+# ---------------------------------------------------------------------------
+# system_prompt: LLM system context for STRATEGY_SCAN jobs.
+# Role: hypothesis generator grounded in academic literature.
+# Primary constraint: every hypothesis must cite at least one paper.
+# Parameter suggestions must use StrategyConfig field names exactly.
+# ---------------------------------------------------------------------------
+system_prompt: |
+  You are a quantitative strategy researcher embedded in an institutional
+  autonomous trading firm operating on HyperLiquid perpetual futures. Your
+  task is to produce a structured set of evidence-backed improvement hypotheses
+  for a specific underperforming trading strategy.
+
+  Your output is the primary input to the firm's strategy iteration loop.
+  The quality of your citations and the precision of your parameter suggestions
+  directly determine whether the iteration loop explores productive search
+  regions or wastes compute on unsupported guesses.
+
+  Research standards:
+  - Every hypothesis statement must be supported by at least one academic
+    citation. Cite the paper key in supporting_citations.
+  - Parameter suggestions (parameter_suggestions dict) must use exact
+    StrategyConfig field names as keys. Do not invent field names.
+    Consult the strategy_taxonomy.{STRATEGY_CLASS}.strategy_config_params
+    section of this template for the canonical field list.
+  - Confidence levels:
+      "high"   — supported by 2+ independent peer-reviewed citations AND
+                 consistent with the provided on-chain/backtest context.
+      "medium" — supported by 1 peer-reviewed citation OR strong theoretical
+                 reasoning with partial empirical support.
+      "low"    — theoretical reasoning only, or single non-peer-reviewed source.
+  - Do not generate hypotheses about increasing leverage, increasing position
+    sizing beyond current StrategyConfig maximums, or disabling risk controls.
+  - Do not generate hypotheses about strategy classes not present in the
+    strategy_taxonomy. If the strategy_class is unknown, return an empty
+    hypotheses list and state the reason in a quality note.
+  - Preferred sources: academic papers on systematic trading, signal design,
+    parameter sensitivity, and regime-conditional strategy performance.
+    arXiv q-fin, SSRN, Journal of Portfolio Management, Journal of Finance,
+    Journal of Futures Markets, Quantitative Finance.
+
+  Output format (hypotheses.json):
+  - hypotheses: list of Hypothesis objects (see output_schema below).
+    Target: 3–7 high-quality hypotheses. More is not better.
+    Each hypothesis must be independently testable in a backtest.
+  - citations: list of citation dicts (BibTeX-compatible).
+  - quality_score: your self-assessed quality score (0–5).
+
+  Safety:
+  - This output is a READ-ONLY research proposal. It does not modify any
+    strategy config file, StrategyConfig object, or execution parameter.
+  - All hypotheses require explicit human approval (HypothesisSet.approved)
+    before the iteration loop can consume them. The ResearchAgent never
+    promotes them automatically.
+  - Do not include wallet addresses, API keys, or private infrastructure
+    details anywhere in the output.
+
+# ---------------------------------------------------------------------------
+# scope: Research dimensions for STRATEGY_SCAN jobs.
+# All four dimensions contribute to hypotheses.json (not synthesis.json).
+# ---------------------------------------------------------------------------
+scope:
+  primary_dimensions:
+
+    - id: "failure_mode_diagnosis"
+      description: >
+        Given the strategy class, its current performance metrics (Sharpe,
+        max drawdown, win rate), and the active regime label, identify the
+        most likely academic explanation for the observed underperformance.
+        Reference the strategy_taxonomy.{STRATEGY_CLASS}.known_failure_modes
+        as a starting point, but go beyond them using the literature.
+        Output as Hypothesis objects with confidence "high" or "medium" only.
+      hypothesis_type: "diagnostic"
+      required_citations: 1
+
+    - id: "parameter_sensitivity"
+      description: >
+        Surface academic evidence for parameter adjustments that address the
+        diagnosed failure modes. Suggest specific values or ranges for
+        StrategyConfig fields using parameter_suggestions. All suggested
+        parameter keys must exist in strategy_taxonomy.{STRATEGY_CLASS}.
+        strategy_config_params. Justify each suggestion with a citation.
+        Prioritise adjustments that reduce drawdown without proportionally
+        reducing returns.
+      hypothesis_type: "parametric"
+      required_citations: 1
+      constraint: "Do not suggest parameter values outside strategy_taxonomy range bounds."
+
+    - id: "complementary_filters"
+      description: >
+        Identify signal enhancements or entry/exit filters from the literature
+        that complement the existing strategy logic in the current regime.
+        Examples: vol filter, time-of-day filter, funding rate confirmation,
+        OI delta gate. Each filter suggestion must be implementable using
+        signal_inputs already listed for the strategy class OR inputs available
+        in the firm's standard data feed (price_ohlcv, funding_rate, l2_order_book,
+        regime_label). Do not suggest inputs requiring external data not in the feed.
+      hypothesis_type: "enhancement"
+      required_citations: 1
+
+    - id: "regime_robustness"
+      description: >
+        Based on the strategy's regime_sensitivity profile and the current
+        regime, assess whether the strategy should be: (a) kept active with
+        adjusted parameters, (b) run at reduced position size, or
+        (c) temporarily disabled pending regime change. Cite academic evidence
+        for the recommended approach. This dimension produces a single
+        "regime_recommendation" hypothesis with parameter_suggestions including
+        position_size_fraction if a reduction is recommended.
+      hypothesis_type: "regime_recommendation"
+      required_citations: 1
+
+  out_of_scope:
+    - Hypotheses requiring leverage increases
+    - Hypotheses disabling stop-loss or drawdown circuit breakers
+    - Price direction predictions
+    - Parameter suggestions using field names not in StrategyConfig
+    - Strategy class substitution recommendations (i.e. "use a different strategy")
+
+# ---------------------------------------------------------------------------
+# literature_search: Stage 2-4 configuration.
+# Base keywords always included; strategy-class-specific keywords prepended
+# from strategy_taxonomy.{STRATEGY_CLASS} at runtime.
+# ---------------------------------------------------------------------------
+literature_search:
+  sources:
+    - arxiv               # q-fin.TR, q-fin.ST, q-fin.PM
+    - semantic_scholar
+    - openAlex
+  base_keywords:
+    - "systematic trading strategy improvement"
+    - "perpetual futures signal design"
+    - "parameter sensitivity trading strategy"
+    - "regime conditional strategy performance"
+    - "HyperLiquid decentralized perpetual"
+    - "cryptocurrency futures systematic backtest"
+    - "drawdown reduction systematic trading"
+    - "signal filter entry timing"
+  max_papers: 35
+  min_citation_year: 2015   # Post-crypto-futures era literature
+  preferred_venues:
+    - "arXiv q-fin"
+    - "Journal of Portfolio Management"
+    - "Journal of Futures Markets"
+    - "Quantitative Finance"
+    - "Journal of Financial Economics"
+    - "SSRN"
+  # Strategy-class-specific keywords are prepended at runtime from:
+  # strategy_taxonomy.{STRATEGY_CLASS}.known_failure_modes (as search terms)
+
+# ---------------------------------------------------------------------------
+# experiment_design: Simulated synthesis for STRATEGY_SCAN.
+# No code execution required — parameter suggestions are literature-backed
+# proposals for the iteration loop to test, not pre-validated results.
+# For validated quantitative parameter sensitivity analysis, use
+# mode: COMPETITIVE_BACKTEST which includes a sandbox experiment spec.
+# ---------------------------------------------------------------------------
+experiment_design:
+  mode: "simulated"
+  rationale: >
+    STRATEGY_SCAN produces literature-backed hypotheses as inputs to the
+    firm's own backtesting infrastructure (apps/jobs/). The ResearchAgent
+    does not run backtests itself. Parameter suggestions from hypotheses.json
+    are proposals for the iteration loop to validate, not validated results.
+    This separation keeps the research layer stateless and auditable.
+
+# ---------------------------------------------------------------------------
+# output_schema: hypotheses.json structure consumed by _parse_hypothesis_set().
+# Maps directly to the Hypothesis and HypothesisSet dataclasses in
+# apps/agents/src/types/research.py.
+# ---------------------------------------------------------------------------
+output_schema:
+  hypotheses_json:
+    hypotheses:
+      type: list
+      description: >
+        List of Hypothesis objects. Each must be independently testable.
+        Target: 3–7. All four scope dimensions should be represented.
+      items:
+        statement:
+          type: string
+          description: >
+            Plain-language hypothesis statement (1–3 sentences).
+            Must be falsifiable by a backtest. Must not assert price direction.
+            Example: "Reducing fast_ema_period from the current value to the
+            range [8, 12] in ranging_low_vol regimes is expected to reduce
+            whipsaw losses by shortening signal lag, based on [citation_key]."
+        confidence:
+          type: string
+          enum: ["low", "medium", "high"]
+          description: >
+            "high": 2+ independent peer-reviewed citations + consistent context.
+            "medium": 1 peer-reviewed citation OR strong theoretical basis.
+            "low": theoretical only or single non-peer-reviewed source.
+        parameter_suggestions:
+          type: object
+          description: >
+            Dict of suggested StrategyConfig parameter adjustments.
+            Keys MUST match strategy_taxonomy.{STRATEGY_CLASS}.strategy_config_params
+            field names exactly. Values are point estimates or [min, max] ranges.
+            Empty dict {} if the hypothesis is a filter/enhancement with no
+            direct parameter mapping.
+          example:
+            fast_ema_period: [8, 12]
+            min_vol_filter_atr: [0.008, 0.015]
+        supporting_citations:
+          type: list
+          description: >
+            List of citation keys from the accompanying citations list.
+            Minimum 1 per hypothesis. Keys must resolve to entries in citations[].
+          items:
+            type: string
+          example: ["lo_2004_adaptive_markets", "moskowitz_2012_time_series_momentum"]
+        hypothesis_type:
+          type: string
+          enum: ["diagnostic", "parametric", "enhancement", "regime_recommendation"]
+          description: "Maps to scope dimension that generated this hypothesis."
+
+    citations:
+      type: list
+      description: >
+        Full citation list for all supporting_citations keys referenced above.
+        BibTeX-compatible. Every key referenced in any supporting_citations
+        list must appear here. Unreferenced citations should not be included.
+      items:
+        key:
+          type: string
+          description: "Short citation key used in supporting_citations (snake_case)."
+          example: "lo_2004_adaptive_markets"
+        title:
+          type: string
+        authors:
+          type: list
+          items: string
+        year:
+          type: integer
+        venue:
+          type: string
+          description: "Journal, conference, or 'arXiv' with section."
+        doi_or_url:
+          type: string
+          description: "DOI or arXiv URL. Must be resolvable. No hallucinated URLs."
+
+    quality_score:
+      type: number
+      description: >
+        Self-assessed quality score (0–5). Criteria:
+          5.0 — All hypotheses high-confidence, all citations verified, full scope coverage.
+          4.0 — Majority high/medium confidence, all citations verified, full scope coverage.
+          3.5 — Minimum acceptable (bridge config min_quality_score threshold).
+                At least 3 hypotheses, all citations resolvable, 3/4 scope dimensions covered.
+          < 3.5 — Below threshold. Job will be flagged in registry. Analyst review recommended.
+      minimum: 0.0
+      maximum: 5.0
+
+# ---------------------------------------------------------------------------
+# quality_gates: Stage 5 human gate checklist.
+# This is the only active gate for STRATEGY_SCAN. It is the single most
+# important control against fabricated citations entering the iteration loop.
+# ---------------------------------------------------------------------------
+quality_gates:
+  stage_5_literature_review:
+    description: >
+      Review retrieved literature before hypothesis synthesis begins.
+      This is the primary anti-fabrication control for STRATEGY_SCAN.
+      A fabricated parameter suggestion citation could propagate into the
+      iteration loop's search bounds if not caught here.
+    checklist:
+      - "Are retrieved papers genuinely relevant to the strategy class and failure modes?"
+      - "Is the strategy class present in strategy_taxonomy? (If not — reject immediately)"
+      - "Do any paper titles, authors, or venues look fabricated or implausible?"
+      - "Spot-check at least 2 citations: verify DOI or arXiv URL resolves to the claimed paper"
+      - "Are there at least 8 relevant papers for the strategy class and regime combination?"
+      - "Does the literature adequately cover the diagnosed failure modes?"
+      - "Is the current regime (from REGIME_LABEL) addressed in the retrieved literature?"
+    reject_criteria:
+      - "Any fabricated citation detected (hallucinated title, non-resolving URL/DOI)"
+      - "Strategy class not in strategy_taxonomy (unknown strategy — cannot validate params)"
+      - "Fewer than 5 relevant papers retrieved"
+      - "No literature addressing the specific regime_label failure modes"
+      - "Retrieved literature is entirely about a different asset class (e.g. equities only)"
+    approve_and_continue:
+      - "Stage 9 and Stage 20 will auto-approve after Stage 5 approval"
+      - "Monitor quality_score in completed hypotheses.json: flag to analyst if < 3.5"
+
+# ---------------------------------------------------------------------------
+# downstream_consumers: How HypothesisSet output is used after hypotheses.json
+# is parsed by _parse_hypothesis_set() in research_agent.py.
+# All paths are READ-ONLY until explicit human approval.
+# ---------------------------------------------------------------------------
+downstream_consumers:
+
+  dashboard_research_panel:
+    consumes:
+      - "hypotheses[].statement"
+      - "hypotheses[].confidence"
+      - "hypotheses[].hypothesis_type"
+      - "quality_score"
+    display: "Research panel — Strategy Evaluation card"
+    actions_available:
+      - "Approve HypothesisSet for iteration loop (sets HypothesisSet.approved = true)"
+      - "Reject individual hypotheses before approval"
+      - "Download paper.pdf and citations.bib for analyst review"
+      - "Trigger COMPETITIVE_BACKTEST job from approved parametric hypotheses"
+    note: >
+      Approval action sets HypothesisSet.approved = true and records
+      approved_by + approved_at. This is the ONLY path by which hypotheses
+      enter the iteration loop. The ResearchAgent never sets approved = true.
+
+  iteration_loop:
+    consumes:
+      - "hypotheses[hypothesis_type=parametric].parameter_suggestions"
+      - "hypotheses[hypothesis_type=regime_recommendation].parameter_suggestions"
+    gate: "HypothesisSet.approved must be True (set by human via dashboard)"
+    path: >
+      Approved hypotheses are written to:
+      logs/research/approved_hypotheses/{job_id}/hypotheses.json
+      The iteration loop reads from this path on its next cycle.
+      It NEVER reads directly from logs/research/artifacts/.
+    parameter_application: >
+      parameter_suggestions values are used as search bounds for the iteration
+      loop's hyperparameter optimisation, not as direct parameter overrides.
+      The iteration loop validates all suggested values against StrategyConfig
+      field range bounds before including them in the search space.
+    note: >
+      If a parameter_suggestions key does not match a StrategyConfig field,
+      the iteration loop logs a warning and skips that suggestion.
+      It does NOT fail or halt on unknown keys.
+
+  competitive_backtest_job:
+    consumes:
+      - "hypotheses[hypothesis_type=parametric].parameter_suggestions"
+    gate: "Manually triggered by analyst from dashboard after Stage 5 approval"
+    note: >
+      Analyst can select one or more parametric hypotheses and trigger a
+      COMPETITIVE_BACKTEST job that runs the suggested parameter ranges
+      through apps/jobs/ backtesting infrastructure.
+      This is a separate ResearchAgent job with mode=COMPETITIVE_BACKTEST,
+      not an automatic continuation of the STRATEGY_SCAN job.
+
+  opro_meta_prompt_optimizer:
+    consumes:
+      - "hypotheses[hypothesis_type=regime_recommendation]"
+    gate: "Human approval required; routed via apps/agents/src/types/prompt-policy.ts"
+    note: >
+      Regime recommendation hypotheses may inform the OPRO meta-prompt
+      optimization cycle's window_summary context. This path follows the
+      same prompt-policy approval gate as market_structure.yaml.
+      See: prompts/Adaptive-OPRO-meta-prompt.md for the consuming template.
