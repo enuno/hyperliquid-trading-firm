@@ -35,17 +35,17 @@
        │  OpenClaw Tool calls                               │  State reads
        ▼                                                    ▼
 ┌──────────────────┐   ┌────────────────────┐   ┌────────────────────┐
-│ multiclaw/       │   │ multiclaw/          │   │ multiclaw/         │
-│ hyperliquid-claw │   │ intelliclaw         │   │ bankr              │
-│ (Exchange + SAE  │   │ (Intel ETL /        │   │ (Treasury /        │
-│  Execution)      │   │  Signal Scoring)    │   │  Risk Engine)      │
+│ multiclaw/       │   │ multiclaw/         │   │ multiclaw/         │
+│ hyperliquid-claw │   │ intelliclaw        │   │ bankr              │
+│ (Exchange + SAE  │   │ (Intel ETL /       │   │ (Treasury /        │
+│  Execution)      │   │  Signal Scoring)   │   │  Risk Engine)      │
 └──────────────────┘   └────────────────────┘   └────────────────────┘
        │                        │
        ▼                        ▼
 ┌──────────────────┐   ┌────────────────────┐
-│ multiclaw/mlflow │   │ multiclaw/tools     │
-│ (Experiment      │   │ (Shared Utilities / │
-│  Tracking)       │   │  CLI Helpers)       │
+│ multiclaw/mlflow │   │ multiclaw/tools    │
+│ (Experiment      │   │ (Shared Utilities/ │
+│  Tracking)       │   │  CLI Helpers)      │
 └──────────────────┘   └────────────────────┘
 ```
 
