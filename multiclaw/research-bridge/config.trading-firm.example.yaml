@@ -1,0 +1,357 @@
+# research-bridge — Annotated Example Config
+# ============================================================================
+# This file is the full reference for all config.trading-firm.yaml options.
+# It is committed to the repo as documentation. Copy it to
+# config.trading-firm.yaml and edit for your deployment.
+#
+#   cp config.trading-firm.example.yaml config.trading-firm.yaml
+#   bash scripts/validate_bridge.sh
+#
+# Secrets (API keys, private keys, wallet addresses, webhook URLs) must NEVER
+# be written into this file or config.trading-firm.yaml. All secret values
+# are referenced by environment variable name (e.g., api_key_env: "MY_KEY")
+# and injected at runtime via K8s Secrets, Docker secrets, or a gitignored
+# .env file. See AGENTS.md §8 for the project-wide secrets policy.
+# ============================================================================
+
+# ─── LLM Backend ────────────────────────────────────────────────────────────
+llm:
+  # provider (required):
+  #   "acp"       — ACP (Agent Client Protocol) mode. Routes all 23 AutoResearchClaw
+  #                 pipeline stages through the already-running OpenClaw agent.
+  #                 No separate LLM API key needed. Recommended for all production jobs.
+  #   "anthropic" — Direct Anthropic API. Use for off-peak nightly jobs on a
+  #                 dedicated research worker node.
+  #   "openai"    — Direct OpenAI API.
+  #   "deepseek"  — DeepSeek API.
+  provider: "acp"
+
+  # ACP mode settings (used when provider = "acp").
+  acp:
+    # agent: The OpenClaw agent identifier.
+    agent: "openclaw"
+    # cwd: Working directory for the ACP session. Use "." for repo root.
+    cwd: "."
+
+  # Direct LLM settings (used when provider != "acp").
+  # api_key_env: Name of the environment variable holding the API key.
+  #   The variable itself must be set externally; never put the key value here.
+  api_key_env: "RESEARCH_LLM_KEY"
+  # model: Model identifier string (provider-specific).
+  model: "claude-sonnet-4-20250514"
+  # max_tokens: Maximum tokens per LLM call within the pipeline.
+  max_tokens: 8192
+  # temperature: Sampling temperature (0.0–1.0). Lower = more deterministic.
+  temperature: 0.3
+
+# ─── Experiment Execution ───────────────────────────────────────────────────
+experiment:
+  # mode (required):
+  #   "simulated" — No code execution. AutoResearchClaw generates experiment designs
+  #                 and synthesizes results conceptually. Safe for all crypto, strategy,
+  #                 and project research topics. Default and recommended.
+  #   "sandbox"   — Docker-isolated code execution. AutoResearchClaw generates and runs
+  #                 Python/R experiment code inside a container. Required for
+  #                 COMPETITIVE_BACKTEST mode. Requires Docker on the host.
+  mode: "simulated"
+
+  # max_concurrent_stages: Number of AutoResearchClaw pipeline stages to execute
+  # in parallel. The pipeline has data dependencies; this controls parallelism
+  # within a single stage where sub-tasks can run concurrently.
+  # Minimum: 1. Recommended: 4 (32 GB RAM), 2 (16 GB RAM).
+  max_concurrent_stages: 4
+
+  # stage_timeout_seconds: Maximum time allowed for a single pipeline stage.
+  # Increase for slow LLM backends or large literature corpora.
+  stage_timeout_seconds: 300
+
+  # sandbox_image: Docker image used for sandbox mode experiment execution.
+  # Must have Python 3.11+, common data science libraries, and network access
+  # to pypi/conda. Ignored when mode = "simulated".
+  sandbox_image: "autorc-sandbox:latest"
+
+  # sandbox_memory_limit: Memory cap for each sandbox container.
+  # Ignored when mode = "simulated".
+  sandbox_memory_limit: "8g"
+
+  # sandbox_cpu_limit: CPU cap for each sandbox container.
+  sandbox_cpu_limit: "4"
+
+# ─── Output & Artifacts ─────────────────────────────────────────────────────
+output:
+  # format (required):
+  #   "json"      — synthesis.json, hypotheses.json, citations.bib only.
+  #   "pdf"       — paper.pdf only (requires LaTeX).
+  #   "json+pdf"  — Both. Recommended: JSON feeds output_parser.py; PDF feeds dashboard.
+  #   "tex+pdf"   — LaTeX source + compiled PDF.
+  format: "json+pdf"
+
+  # directory (required): Root directory for all artifact output.
+  # All job outputs are written under <directory>/<job-id>/
+  # Path is relative to the repo root.
+  # The artifact_guard (see bridge section) enforces that no file is written
+  # outside this directory.
+  directory: "../../logs/research/artifacts"
+
+  # keep_intermediate: Preserve intermediate stage outputs (e.g., raw literature
+  # JSON, draft section text) alongside final artifacts. Useful for debugging
+  # pipeline failures. Increases disk usage significantly for long DEEP runs.
+  keep_intermediate: false
+
+  # latex_compiler: Binary name for PDF compilation.
+  # "pdflatex" (fast, widely available) or "xelatex" (better Unicode support).
+  # Set to null to skip PDF generation entirely.
+  latex_compiler: "pdflatex"
+
+# ─── Quality & Scoring ──────────────────────────────────────────────────────
+quality:
+  # min_score (required): Minimum AutoResearchClaw quality score (0–5) to
+  # accept a completed job. Jobs scoring below this threshold are flagged
+  # QUALITY_FAIL in the registry but artifacts are still written.
+  #
+  # Calibration guidance:
+  #   5.0  — Exceptional. Rarely achieved outside mature academic fields.
+  #   4.0  — Strong. Appropriate for well-studied quant finance topics.
+  #   3.5  — Good. Recommended default for crypto/DeFi/strategy topics where
+  #           primary source coverage is lower than traditional academia.
+  #   2.0  — Acceptable. Upstream default; may produce low-quality outputs for
+  #           crypto topics. Not recommended for production research jobs.
+  #   <2.0 — Below threshold. Flag for manual review before any use.
+  min_score: 3.5
+
+  # min_sources: Reject (flag) jobs citing fewer than this many unique sources.
+  min_sources: 5
+
+  # warn_on_unverified_urls: Emit a WARNING log entry for each cited source
+  # whose URL cannot be resolved. Does not fail the job. The Stage 5 human
+  # gate is the primary fabrication control; this is a backstop check.
+  warn_on_unverified_urls: true
+
+# ─── Search & Literature Sources ────────────────────────────────────────────
+search:
+  # sources: Literature sources to query during Stage 3–6 of the pipeline.
+  #
+  # Natively supported by AutoResearchClaw v0.3.x:
+  #   - arxiv            Academic preprints (q-fin, cs.LG, econ).
+  #   - semantic_scholar  Cross-disciplinary academic graph.
+  #   - openAlex         Broad open-access academic index.
+  #
+  # NOT natively supported (pre-process via context_injector.py):
+  #   - Messari          Crypto project research and metrics.
+  #   - DeFiLlama        On-chain TVL, protocol, and yield data.
+  #   - Token Terminal    Protocol revenue and fundamentals.
+  #   - Dune Analytics    Custom on-chain query results.
+  #
+  # To incorporate crypto-native data, format it as structured topic context
+  # in context_injector.py before calling researchclaw. Do not add unsupported
+  # source names here; they will be silently ignored by the pipeline.
+  sources:
+    - arxiv
+    - semantic_scholar
+    - openAlex
+
+  # max_papers_per_source: Cap on retrieved papers per source per job.
+  # Increase for DEEP mode research on well-studied topics.
+  max_papers_per_source: 30
+
+  # arxiv_categories: arXiv subject category filters. Applied when arxiv is
+  # in sources. Uses arXiv category identifiers.
+  # Full list: https://arxiv.org/category_taxonomy
+  arxiv_categories:
+    - "q-fin.TR"   # Trading and market microstructure
+    - "q-fin.PM"   # Portfolio management
+    - "q-fin.CP"   # Computational finance
+    - "cs.LG"      # Machine learning
+    - "cs.AI"      # Artificial intelligence
+    - "econ.GN"    # General economics
+
+  # rate_limit_delay: Seconds to wait between search API calls.
+  # Increase to 3.0+ if jobs are hitting HTTP 429 on arXiv or Semantic Scholar.
+  rate_limit_delay: 1.5
+
+  # cache_dir: Optional local cache for downloaded papers (avoids re-fetching
+  # the same papers across multiple jobs). Set to null to disable caching.
+  cache_dir: "../../logs/research/paper_cache"
+
+  # cache_ttl_days: How long to keep cached papers before re-fetching.
+  cache_ttl_days: 30
+
+# ─── Human Approval Gates ───────────────────────────────────────────────────
+gates:
+  # AutoResearchClaw has three human approval gates:
+  #
+  #   Stage 5  — Literature quality review.
+  #              Verify that retrieved papers are relevant, non-fabricated,
+  #              and cover the topic adequately before synthesis proceeds.
+  #
+  #   Stage 9  — Experiment design review.
+  #              For sandbox mode: review generated experiment code before
+  #              execution. For simulated mode: review the experiment design
+  #              document before the pipeline synthesizes results.
+  #
+  #   Stage 20 — Final quality review.
+  #              Review the full draft paper/synthesis before finalization
+  #              and artifact export.
+  #
+  # Default gate matrix by ResearchMode:
+  #
+  #                      stage_5  stage_9  stage_20
+  #   DEEP                 true     true     true
+  #   STRATEGY_SCAN        true     false    false
+  #   PROJECT_AUDIT        true     true     true
+  #   COMPETITIVE_BACKTEST false    true     false
+  #   NIGHTLY_DIGEST       false    false    false
+  #
+  # The overrides map below can override individual gate states per mode.
+  # Format: overrides.<mode>.<stage_N>: true | false
+  # Any mode+stage not listed here uses the matrix default above.
+  #
+  # Security invariant: Never set stage_5 to false for DEEP or PROJECT_AUDIT
+  # in production. The Stage 5 gate is the primary anti-fabrication control.
+  overrides: {}
+  #
+  # Example — disable Stage 20 for STRATEGY_SCAN (already false by default;
+  # shown here for illustration only):
+  # overrides:
+  #   strategy_scan:
+  #     stage_20: false
+
+  # gate_timeout_seconds: How long to wait for a human gate response before
+  # moving the job to WAITING_GATE state. Job is not failed; it is paused
+  # until a human responds via /researchclaw:resume or the dashboard.
+  gate_timeout_seconds: 86400   # 24 hours
+
+  # gate_notify: Notification channel for GATE_PENDING alerts.
+  #   "log"     — Write to stdout/structured log only.
+  #   "webhook" — HTTP POST to gate_notify_webhook_env URL.
+  #   "slack"   — Slack incoming webhook (requires SLACK_WEBHOOK_URL env var).
+  gate_notify: "log"
+
+  # gate_notify_webhook_env: Environment variable name holding the webhook URL.
+  # Only used when gate_notify = "webhook" or "slack".
+  # gate_notify_webhook_env: "RESEARCH_GATE_WEBHOOK_URL"
+
+# ─── Bridge — Firm Context Integration ──────────────────────────────────────
+bridge:
+  # rl_buffer_export_path: Path to the RL buffer export JSON written by
+  # apps/jobs/rl_execution_trainer.py after each training cycle.
+  # context_injector.py reads the last rl_context_lookback experiments from
+  # this file and embeds them as structured context in research topic prompts.
+  # Set to null to disable RL context injection (topic prompts will be less
+  # specific to current strategy performance).
+  rl_buffer_export_path: "../../logs/rl_buffer_export.json"
+
+  # backtest_history_path: Path to the backtest history SQLite database
+  # written by apps/jobs/backtest_runner.py.
+  # Used alongside rl_buffer_export to give the pipeline context about
+  # which strategy configurations have been evaluated and their outcomes.
+  backtest_history_path: "../../logs/experiments.sqlite"
+
+  # rl_context_lookback: Number of most recent experiments to include in
+  # injected context. More context = more specific research topics but
+  # higher token usage. 20 is a good balance for max_context_tokens: 4000.
+  rl_context_lookback: 20
+
+  # registry_path: SQLite database path for the research job registry.
+  # Tracks all jobs: topic, mode, trigger source, stage reached, artifact
+  # path, quality score, and timestamps.
+  registry_path: "../../logs/research/research_registry.db"
+
+  # max_context_tokens: Maximum token budget for injected firm context per
+  # research job. context_injector.py hard-truncates to this limit before
+  # calling the pipeline. Keep headroom for the topic string itself (~200 tokens)
+  # and the pipeline's system prompt (~500 tokens).
+  max_context_tokens: 4000
+
+  # artifact_guard: Block any artifact write to paths outside output.directory.
+  # Enforced at runtime by context_injector.py and the pre-delete-guard hook.
+  # NEVER set to false in production.
+  artifact_guard: true
+
+  # scrub_env_vars: Environment variable names whose values must never appear
+  # in injected context strings, log lines, or artifact files.
+  # Extend this list with any project-specific secret env var names.
+  scrub_env_vars:
+    - HL_PRIVATE_KEY                # HyperLiquid private key
+    - VAULT_SUBACCOUNT_ADDRESS      # Treasury vault address
+    - RESEARCH_LLM_KEY              # Dedicated research LLM API key
+    - RESEARCH_GATE_WEBHOOK_URL     # Gate notification webhook
+    - SLACK_WEBHOOK_URL             # Slack webhook
+    - DATABASE_URL                  # Postgres connection string
+    - REDIS_URL                     # Redis connection string
+    - MLFLOW_TRACKING_URI           # MLflow tracking server URI
+    - HL_API_KEY                    # HyperLiquid API key
+    - HUMMINGBOT_SECRET             # Hummingbot controller secret
+
+# ─── Prompt Templates ───────────────────────────────────────────────────────
+templates:
+  # directory: Root directory containing YAML prompt template files.
+  # Paths are relative to the research-bridge module root.
+  directory: "./prompt_templates"
+
+  # active: Maps each ResearchMode value to a prompt template filename.
+  # The template determines how context_injector.py formats firm data
+  # into a ResearchClaw topic string for that mode.
+  active:
+    # strategy_scan: Uses strategy class, Sharpe, max DD, and regime label
+    # to focus research on failure modes and improvement opportunities.
+    strategy_scan: "strategy_evaluation.yaml"
+
+    # project_audit: Uses ticker, TVL, protocol type, and whitepaper URL
+    # to focus research on tokenomics, competition, and DeFi integration risk.
+    project_audit: "crypto_project_scan.yaml"
+
+    # deep: Full 23-stage pipeline. Override template per invocation as needed.
+    deep: "strategy_evaluation.yaml"
+
+    # competitive_backtest: Focuses on quantitative strategy comparison.
+    competitive_backtest: "strategy_evaluation.yaml"
+
+    # nightly_digest: Uses volatility regime and funding rate snapshot
+    # to focus on market microstructure and basis-trading literature.
+    nightly_digest: "market_structure.yaml"
+
+# ─── Research Registry ──────────────────────────────────────────────────────
+registry:
+  # schema_version: Internal schema version for research_registry.db.
+  # Increment when adding new columns; registry.py handles migrations.
+  schema_version: 1
+
+  # artifact_retention_days: Delete artifact directories for completed jobs
+  # older than this many days. Set to 0 to retain all artifacts indefinitely.
+  # Note: registry rows are always retained; only on-disk artifacts are pruned.
+  artifact_retention_days: 90
+
+  # export_summary_json: Write a JSON summary of all registry entries on each
+  # job state transition. Enables dashboard polling without direct SQLite access.
+  export_summary_json: true
+
+  # summary_path: Output path for the registry summary JSON file.
+  summary_path: "../../logs/research/registry_summary.json"
+
+# ─── Observability ──────────────────────────────────────────────────────────
+observability:
+  # log_level: Logging verbosity for all research-bridge components.
+  #   DEBUG   — Full pipeline trace including LLM prompts/responses (verbose).
+  #   INFO    — Job lifecycle events, gate transitions, artifact writes (recommended).
+  #   WARNING — Only warnings and errors.
+  #   ERROR   — Only errors.
+  log_level: "INFO"
+
+  # structured_logs: Emit logs as JSON objects (recommended for production).
+  # Consumed by the firm's central logging stack (Loki, Elasticsearch, etc.).
+  # Set to false for human-readable console output during local development.
+  structured_logs: true
+
+  # audit_log_path: Path to the firm's central audit log (append-only JSONL).
+  # research-bridge appends a research_bridge_event entry on each job state
+  # transition: QUEUED → RUNNING → GATE_PENDING → COMPLETE | FAILED.
+  # Set to null to disable audit logging (not recommended for production).
+  audit_log_path: "../../logs/audit.jsonl"
+
+  # mlflow_experiment: MLflow experiment name for research job tracking.
+  # Each job is logged as an MLflow run with topic, mode, quality_score,
+  # stage_reached, and artifact URIs as parameters and metrics.
+  # Requires MLFLOW_TRACKING_URI env var. Set to null to disable.
+  mlflow_experiment: null
+  # mlflow_experiment: "research-bridge"
