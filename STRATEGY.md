@@ -1,6 +1,6 @@
 # STRATEGY.md — HyperLiquid Trading Firm
 
-**Version:** 1.0 — April 2026
+**Version:** 1.1 — April 2026
 **Status:** Active Reference — Phase A
 **Repo:** https://github.com/enuno/hyperliquid-trading-firm
 
@@ -22,6 +22,7 @@
 12. [Validation Requirements (All Strategies)](#12-validation-requirements-all-strategies)
 13. [Strategy Registry & Lifecycle](#13-strategy-registry--lifecycle)
 14. [References](#14-references)
+15. [Senpi Skills Strategy Catalog](#15-senpi-skills-strategy-catalog)
 
 ---
 
@@ -501,10 +502,287 @@ strategies:
 - Quant-Zero (Kelly framework, closed-bar signal architecture): https://github.com/marcohwlam/quant-zero
 - WaveEdge (wave structure detection, swing levels): https://github.com/koobraelac/wavedge
 - HyperLiquid API docs: https://hyperliquid.gitbook.io/hyperliquid-docs
+- Senpi Skills submodule: https://github.com/Senpi-ai/senpi-skills (mounted at `skills/senpi-skills`)
 - This repo: https://github.com/enuno/hyperliquid-trading-firm
 
 ---
 
-*Document version: 1.0 — April 2026*
+## 15. Senpi Skills Strategy Catalog
+
+> **Source:** Git submodule at `skills/senpi-skills` → upstream: [https://github.com/Senpi-ai/senpi-skills](https://github.com/Senpi-ai/senpi-skills)
+> **Catalog version:** 1.0 (2026-03-11)
+> **Governance note:** All Senpi skills are **external reference strategies**. Before any Senpi strategy logic is adapted for live deployment in this system, it must pass all gates in §2 (Strategy Governance Rules) including backtest, manual approval, `strategy_registry.yaml` entry, and 30+ OOS paper trades. The descriptions below are sourced directly from the upstream catalog and strategy markdown files. They are **research inputs**, not pre-approved strategies.
+
+---
+
+### 15.1 Submodule Structure
+
+The `skills/senpi-skills` submodule contains:
+
+| Path | Description |
+|---|---|
+| `catalog.json` | Machine-readable strategy registry with group, risk level, min budget, and tracker URLs |
+| `GUIDE.md` | Developer guide for building and deploying Senpi skills |
+| `DSL-MIGRATION-PLAYBOOK.md` | Dynamic Stop Loss migration playbook |
+| `feral-fox-v3-strategy.md` | Feral Fox v3 strategy specification |
+| `ghost-fox-strategy (1).md` | Ghost Fox strategy specification |
+| `ghost-fox-v2-strategy.md` | Ghost Fox v2 strategy specification |
+| `mamba-strategy (1).md` | Mamba strategy specification |
+| `<strategy-name>/` | Per-strategy skill directories (skill code, config, prompts) |
+| `autonomous-trading/` | Autonomous trading runtime skill |
+| `senpi-trading-runtime/` | Core trading runtime infrastructure |
+| `dsl-dynamic-stop-loss/` | Shared DSL (Dynamic Stop Loss) infrastructure skill |
+| `fee-optimizer/` | Fee optimization infrastructure skill |
+| `opportunity-scanner/` | Market opportunity scanner infrastructure |
+| `emerging-movers/` | Emerging movers scanner infrastructure |
+| `whale-index/` | Whale index signal infrastructure |
+
+---
+
+### 15.2 Strategy Groups
+
+Senpi organizes strategies into five groups:
+
+| Group | Label | Description |
+|---|---|---|
+| `proven` | 🏆 Proven Performers | Strategies with established track records |
+| `single` | 🎯 Single-Asset Hunters | Strategies optimized for a specific asset |
+| `multi` | 🔬 Multi-Signal Strategies | Strategies combining multiple independent signal sources |
+| `alt` | 🕵️ Alternative Edge | Strategies exploiting structural or behavioral inefficiencies |
+| `variant` | 🔧 Strategy Variants | Variants of base strategies with modified parameters or filters |
+
+---
+
+### 15.3 Proven Performers 🏆
+
+#### FOX 🦊
+- **ID:** `fox` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Catches explosive First Jumps on the leaderboard before the crowd.
+- **Strategy Type:** Momentum / leaderboard breakout detection
+- **Edge Hypothesis:** Identifies assets beginning to appear on HL leaderboards as leading indicators of institutional accumulation and momentum ignition. Enters early in the move before crowd participation.
+- **Regime Fit:** `TREND_UP`, early `event_breakout`
+- **HL Integration Notes:** Leaderboard data available via HL WebSocket; signal requires real-time leaderboard rank change detection. Compatible with `HyperliquidFeed` extension.
+- **Tracker:** https://strategies.senpi.ai/bot/fox
+- **Submodule Path:** `skills/senpi-skills/fox/`
+
+#### Viper 🐍
+- **ID:** `viper` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Trades range-bound chop at support/resistance. Works when nothing is trending.
+- **Strategy Type:** Mean reversion / range-bound support-resistance fade
+- **Edge Hypothesis:** In consolidation regimes, price oscillates predictably between established support and resistance. Viper fades extremes with defined stops at range boundaries, capturing repetitive mean-reversion moves.
+- **Regime Fit:** `RANGE` (`range_low_vol`) — **directly complements §5 of this document**
+- **HL Integration Notes:** Requires OHLCV closed bars; S/R levels derivable from `WaveDetector` swing output. This strategy is a strong candidate for Phase C mean reversion validation (§5).
+- **Tracker:** https://strategies.senpi.ai/bot/viper
+- **Submodule Path:** `skills/senpi-skills/viper/`
+
+---
+
+### 15.4 Single-Asset Hunters 🎯
+
+#### Grizzly 🐻
+- **ID:** `grizzly` | **Risk:** Aggressive | **Min Budget:** $2,000
+- **Tagline:** BTC only. Every signal source. 15-20x leverage. Maximum conviction.
+- **Strategy Type:** High-conviction multi-signal BTC momentum with aggressive leverage
+- **Edge Hypothesis:** Aggregates all available signal sources for BTC specifically — wave structure, volume, on-chain, leaderboard, funding — and only enters when all sources converge. High leverage justified by strict multi-source confirmation gate.
+- **Regime Fit:** `TREND_UP` / `TREND_DOWN` (strong conviction states only)
+- **HL Integration Notes:** BTC-PERP is Phase A instrument — direct overlap with §4. Grizzly's multi-signal convergence approach is directionally aligned with this system's debate-agent model. **SAE leverage cap must be respected** — 15-20x leverage exceeds default `SAE_MAX_LEVERAGE` and would require explicit configuration override and manual approval.
+- **Tracker:** https://strategies.senpi.ai/bot/grizzly
+- **Submodule Path:** `skills/senpi-skills/grizzly/`
+
+#### Cheetah 🐆
+- **ID:** `cheetah` | **Risk:** Aggressive | **Min Budget:** $1,000
+- **Tagline:** HYPE only. 8-12x leverage. Fastest predator for the fastest asset.
+- **Strategy Type:** Single-asset momentum on HYPE-PERP with moderate-high leverage
+- **Edge Hypothesis:** HYPE (HyperLiquid's native token) exhibits unique volatility characteristics on its home exchange. Cheetah exploits native token momentum with tailored leverage calibrated to HYPE's liquidity profile.
+- **Regime Fit:** `TREND_UP` / `TREND_DOWN`
+- **HL Integration Notes:** HYPE-PERP is a Phase C instrument candidate. Requires dedicated liquidity assessment — HYPE/HL correlation creates venue-specific risk that must be assessed independently from BTC/ETH strategies.
+- **Tracker:** https://strategies.senpi.ai/bot/cheetah
+- **Submodule Path:** `skills/senpi-skills/cheetah/`
+
+---
+
+### 15.5 Multi-Signal Strategies 🔬
+
+#### Tiger 🐅
+- **ID:** `tiger-strategy` | **Risk:** Moderate | **Min Budget:** $2,000
+- **Tagline:** 5 parallel scanners, 230 assets, auto-optimizer that learns from results.
+- **Strategy Type:** Broad multi-asset scanner with autonomous parameter optimization
+- **Edge Hypothesis:** Running 5 independent signal scanners across 230 HL assets simultaneously, with a feedback loop that reweights scanner confidence based on recent outcomes, provides diversified exposure and adaptive edge.
+- **Regime Fit:** All regimes (scanner-dependent); auto-optimizer adjusts per regime
+- **HL Integration Notes:** 230-asset scan scope is operationally significant — requires high-throughput data ingestion beyond current `HyperliquidFeed` single-asset design. Phase C multi-asset expansion prerequisite. The auto-optimizer pattern is directly relevant to the `ablation_runner.py` feedback loop design.
+- **Tracker:** https://strategies.senpi.ai/bot/tiger
+- **Submodule Path:** `skills/senpi-skills/tiger-strategy/`
+
+#### Cobra 🐍
+- **ID:** `cobra` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Triple convergence. Only strikes when price, volume, and new money all agree.
+- **Strategy Type:** Triple-confirmation momentum (price + volume + new capital inflow)
+- **Edge Hypothesis:** Requires price momentum, volume confirmation, and net new money inflow to all align simultaneously. The "new money" signal (detected via OI expansion or wallet inflow proxy) filters false breakouts driven by existing participant rotation.
+- **Regime Fit:** `TREND_UP` / early `event_breakout`
+- **HL Integration Notes:** OI-based "new money" signal is available via `HyperliquidFeed` OI delta. Volume confirmation is available from OHLCV. This triple-convergence filter pattern is directly adaptable as a signal quality gate within the existing `ObservationPack` schema.
+- **Tracker:** https://strategies.senpi.ai/bot/cobra
+- **Submodule Path:** `skills/senpi-skills/cobra/`
+
+#### Bison 🦬
+- **ID:** `bison` | **Risk:** Aggressive | **Min Budget:** $2,000
+- **Tagline:** Conviction holder. Top 10 assets, 4h trend thesis, holds hours to days.
+- **Strategy Type:** Medium-term conviction trend following on top-10 HL assets
+- **Edge Hypothesis:** Top-10 HL assets by volume have sufficient liquidity and trend persistence to support multi-hour to multi-day directional holds. 4h timeframe thesis aligns with institutional swing trading horizons, reducing noise from short-term mean reversion.
+- **Regime Fit:** `TREND_UP` / `TREND_DOWN` on 4h primary timeframe — **directly aligned with §4 signal timeframe**
+- **HL Integration Notes:** Phase B instrument expansion (ETH-PERP, SOL-PERP) maps onto Bison's top-10 scope. The 4h primary timeframe and swing-hold logic are architecturally identical to the Wave-Trend strategy in §4. Bison's logic is a strong Phase B validation candidate.
+- **Tracker:** https://strategies.senpi.ai/bot/bison
+- **Submodule Path:** `skills/senpi-skills/bison/`
+
+#### Hawk 🦅
+- **ID:** `hawk` | **Risk:** Moderate | **Min Budget:** $1,000
+- **Tagline:** Scans 4 markets every 30s, picks the single strongest signal.
+- **Strategy Type:** Rapid multi-market signal selection with single-best-signal execution
+- **Edge Hypothesis:** Scanning 4 markets every 30 seconds and executing only on the single strongest signal at any moment concentrates capital into highest-conviction opportunities rather than diversifying into marginal setups.
+- **Regime Fit:** All regimes (signal-strength gated)
+- **HL Integration Notes:** 30-second scan cycle is latency-sensitive. Current `HyperliquidFeed` WebSocket + closed-bar architecture may need a tick-level supplement for 30s signals. The "single strongest signal" selection model is relevant to Phase B multi-asset `FundManager` allocation logic.
+- **Tracker:** https://strategies.senpi.ai/bot/hawk
+- **Submodule Path:** `skills/senpi-skills/hawk/`
+
+---
+
+### 15.6 Alternative Edge Strategies 🕵️
+
+#### Scorpion 🦂
+- **ID:** `scorpion` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Mirrors whale wallets. Exits the instant they do.
+- **Strategy Type:** On-chain whale wallet copy-trading with symmetric exit mirroring
+- **Edge Hypothesis:** Labeled large-wallet (whale) positions on HL are leading indicators of near-term directional moves. Entry mirrors whale opens; exit is immediately triggered when the tracked wallet closes — avoiding overstay risk inherent in conventional copy trading.
+- **Regime Fit:** All regimes (whale-signal gated)
+- **HL Integration Notes:** HL's on-chain transparency makes whale tracking feasible without external data providers. This strategy is directly related to §9 (On-Chain Smart Money Flow) and the `scorpion_client.py` / `subsquid_client.py` architecture. Wallet labeling requires off-chain enrichment (Nansen or equivalent).
+- **Tracker:** https://strategies.senpi.ai/bot/scorpion
+- **Submodule Path:** `skills/senpi-skills/scorpion/`
+
+#### Owl 🦉
+- **ID:** `owl` | **Risk:** Aggressive | **Min Budget:** $1,000
+- **Tagline:** Pure contrarian. Enters against extreme crowding when exhaustion signals fire.
+- **Strategy Type:** Contrarian fade of extreme sentiment / position crowding with exhaustion confirmation
+- **Edge Hypothesis:** When market positioning reaches extreme crowding (measured by funding rate extremes, OI concentration, or leaderboard uniformity), and exhaustion signals fire (momentum divergence, volume collapse, wick rejection), a contrarian entry captures the crowding unwind.
+- **Regime Fit:** `EVENT_RISK` (`funding_crowded_long` / `funding_crowded_short`) — **directly maps to §6 and §8**
+- **HL Integration Notes:** Funding rate extremes and OI concentration are available in `ObservationPack`. Owl's exhaustion confirmation logic is architecturally complementary to the Liquidation Cascade Fade strategy (§8). Strong Phase C research candidate.
+- **Tracker:** https://strategies.senpi.ai/bot/owl
+- **Submodule Path:** `skills/senpi-skills/owl/`
+
+#### Croc 🐊
+- **ID:** `croc` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Funding rate arbitrage. Collects payments while waiting for the snap.
+- **Strategy Type:** Funding rate carry collection with directional snap capture
+- **Edge Hypothesis:** Holds the funding-receiving side of a perp position to accumulate carry payments, while simultaneously maintaining a stop-loss-protected directional bias for the eventual funding rate reversal "snap" — capturing both carry and directional P&L.
+- **Regime Fit:** `TREND_UP` / `TREND_DOWN` with elevated funding — **directly related to §6 (Funding Rate Carry)**
+- **HL Integration Notes:** This is the most architecturally complete analog to §6 in this document. Croc's dual-objective (carry + snap) adds complexity beyond a pure carry hedge. The snap capture component requires directional stop management compatible with `TradeIntent` / `SAE` flow.
+- **Tracker:** https://strategies.senpi.ai/bot/croc
+- **Submodule Path:** `skills/senpi-skills/croc/` *(Note: `croc` directory not present in current submodule — verify at submodule update)*
+
+#### Shark 🦈
+- **ID:** `shark` | **Risk:** Aggressive | **Min Budget:** $1,000
+- **Tagline:** Smart money consensus + liquidation cascade front-running.
+- **Strategy Type:** Smart money signal aggregation with liquidation cluster exploitation
+- **Edge Hypothesis:** Combines labeled smart money wallet consensus (directional bias) with real-time liquidation cluster proximity data to front-run forced liquidations — entering just before predicted cascade zones with a stop beyond the cluster.
+- **Regime Fit:** `EVENT_RISK` (`liquidation_cascade_risk`) and `TREND_UP` / `TREND_DOWN`
+- **HL Integration Notes:** **Directly related to §8 (Liquidation Cascade Fade) and §9 (On-Chain Smart Money Flow).** `IntelliClaw` liq cluster data is already in `ObservationPack`. The smart money consensus layer maps onto `OnChainFlowAnalyst` agent output. Shark represents the combined Phase B/C integration of these two planned strategies.
+- **Tracker:** https://strategies.senpi.ai/bot/shark
+- **Submodule Path:** `skills/senpi-skills/shark/`
+
+#### Wolf 🐺
+- **ID:** `wolf-strategy` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Pack hunter. Leaderboard momentum, enters early on what smart money is buying.
+- **Strategy Type:** Leaderboard momentum + smart money consensus entry
+- **Edge Hypothesis:** Smart money accumulation detected via leaderboard position changes precedes retail momentum. Wolf enters early — before crowd recognition — and exits when leaderboard signal weakens or smart money rotates.
+- **Regime Fit:** `TREND_UP`, early `event_breakout`
+- **HL Integration Notes:** Leaderboard signal is HL-native and available in real time. Wolf is a lower-leverage, broader-asset version of FOX with smart money overlay. Base strategy for Dire Wolf variant.
+- **Tracker:** https://strategies.senpi.ai/bot/wolf
+- **Submodule Path:** `skills/senpi-skills/wolf-strategy/`
+
+---
+
+### 15.7 Strategy Variants 🔧
+
+#### Dire Wolf 🐺
+- **ID:** `dire-wolf` | **Base:** `wolf-strategy` | **Risk:** Moderate | **Min Budget:** $1,000
+- **Tagline:** Wolf in sniper mode. Fewer trades, zero rotation, maker fees.
+- **Variant Changes vs. Wolf:** Higher conviction threshold (fewer, higher-quality entries); maker-only order routing to capture fee rebates; no mid-trade rotation.
+- **HL Integration Notes:** Maker-only order routing requires `LIMIT` order type with post-only flag via HL API. Fee model impact must be included in OOS backtest (see §12.1).
+- **Tracker:** https://strategies.senpi.ai/bot/dire-wolf
+
+#### Feral Fox 🦊
+- **ID:** `feral-fox` | **Base:** `fox` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** FOX with higher conviction filters. Score 7+, 3 reasons minimum.
+- **Variant Changes vs. FOX:** Signal score threshold raised to 7+ (vs. lower base threshold); minimum 3 independent reasons required for entry confirmation.
+- **HL Integration Notes:** The multi-reason confirmation pattern is directly analogous to `confluence_score` and debate-agent majority logic in §4.2. Feral Fox v3 strategy spec available at `skills/senpi-skills/feral-fox-v3-strategy.md`.
+- **Tracker:** https://strategies.senpi.ai/bot/feral-fox
+
+#### Ghost Fox 👻
+- **ID:** `ghost-fox-strategy` | **Base:** `fox` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Feral Fox + infinite trailing at 85% of peak. No ceiling.
+- **Variant Changes vs. Feral Fox:** Adds infinite trailing stop at 85% of peak P&L — no fixed take-profit target, allows unlimited upside capture while protecting 85% of peak gains.
+- **HL Integration Notes:** Trailing stop logic requires stateful P&L tracking per position in `FundManager`. Ghost Fox v1 and v2 strategy specs available at `skills/senpi-skills/ghost-fox-strategy (1).md` and `skills/senpi-skills/ghost-fox-v2-strategy.md`.
+- **Tracker:** https://strategies.senpi.ai/bot/ghost-fox
+
+#### Mamba 🐍
+- **ID:** `mamba-strategy` | **Base:** `viper` | **Risk:** Moderate | **Min Budget:** $500
+- **Tagline:** Viper + infinite trailing. Catches the bounce AND the breakout.
+- **Variant Changes vs. Viper:** Adds infinite trailing stop to Viper's mean-reversion entries — captures the initial bounce (mean reversion) and then allows trailing to capture any subsequent breakout from the range.
+- **HL Integration Notes:** Mamba is a hybrid mean-reversion + breakout-continuation strategy. The transition from mean-reversion to trailing-breakout requires regime re-evaluation mid-trade — aligns with `RegimeMapper` real-time update cycle. Strategy spec at `skills/senpi-skills/mamba-strategy (1).md`.
+- **Tracker:** https://strategies.senpi.ai/bot/mamba
+
+---
+
+### 15.8 Senpi Strategy ↔ This System Mapping
+
+The table below maps each Senpi strategy to its most relevant analog or integration point within the HyperLiquid Trading Firm architecture.
+
+| Senpi Strategy | Strategy Type | Best Analog in This System | Integration Phase | Priority |
+|---|---|---|---|---|
+| FOX | Leaderboard momentum | New strategy (Phase B/C) — leaderboard feed extension to `HyperliquidFeed` | Phase B | Medium |
+| Viper | Range mean reversion | §5 — Mean Reversion / Range (Phase C) | Phase C | **High** |
+| Grizzly | High-conviction BTC multi-signal | §4 — Wave-Trend Momentum (BTC, higher conviction variant) | Phase B | **High** |
+| Cheetah | HYPE single-asset momentum | Phase C new instrument (HYPE-PERP) | Phase C | Low |
+| Tiger | Multi-asset auto-optimizing scanner | Phase C multi-asset expansion + ablation feedback loop | Phase C | Medium |
+| Cobra | Triple-convergence momentum | §4 signal quality extension (OI delta + volume gate) | Phase B | **High** |
+| Bison | 4h multi-asset conviction holder | §4 Phase B expansion (ETH-PERP, SOL-PERP) | Phase B | **High** |
+| Hawk | Best-of-4 rapid signal selection | Phase B `FundManager` multi-asset signal selection | Phase B | Medium |
+| Scorpion | Whale wallet mirroring | §9 — On-Chain Smart Money Flow overlay | Phase B/C | Medium |
+| Owl | Contrarian crowding fade | §8 — Liquidation Cascade Fade + §6 funding extremes | Phase C | Medium |
+| Croc | Funding carry + snap | §6 — Funding Rate Carry (Phase C) | Phase C | **High** |
+| Shark | Smart money + liq cascade | §8 + §9 combined (Phase C) | Phase C | Medium |
+| Wolf | Leaderboard + smart money | New strategy (Phase B/C) | Phase B | Medium |
+| Dire Wolf | Wolf (maker-only, high conviction) | Wolf variant — fee model requires HL maker order routing | Phase B/C | Low |
+| Feral Fox | FOX (high conviction filter) | Confluence score / debate-agent filter pattern (§4.2) | Phase B | Medium |
+| Ghost Fox | Feral Fox + infinite trailing | Trailing stop extension to `FundManager` state | Phase C | Low |
+| Mamba | Viper + trailing breakout continuation | §5 variant with regime transition detection | Phase C | Low |
+
+---
+
+### 15.9 Shared Infrastructure Skills
+
+The following Senpi skills provide infrastructure rather than standalone strategies. They are relevant to this system's platform design:
+
+| Skill | Path | Relevance to This System |
+|---|---|---|
+| `dsl-dynamic-stop-loss` | `skills/senpi-skills/dsl-dynamic-stop-loss/` | Dynamic stop loss framework — relevant to `TradeIntent` stop management and SAE stop enforcement |
+| `fee-optimizer` | `skills/senpi-skills/fee-optimizer/` | Maker/taker fee optimization — relevant to order type selection in execution engine |
+| `opportunity-scanner` | `skills/senpi-skills/opportunity-scanner/` | Multi-asset opportunity scanning — relevant to Phase C `HyperliquidFeed` multi-asset extension |
+| `emerging-movers` | `skills/senpi-skills/emerging-movers/` | Emerging momentum detection — relevant to FOX/Wolf leaderboard signal implementation |
+| `whale-index` | `skills/senpi-skills/whale-index/` | Whale position aggregation index — relevant to §9 OnChainFlowAnalyst and Scorpion integration |
+| `senpi-trading-runtime` | `skills/senpi-skills/senpi-trading-runtime/` | Core Senpi execution runtime — reference architecture for execution engine design patterns |
+| `autonomous-trading` | `skills/senpi-skills/autonomous-trading/` | Autonomous trading agent runtime — reference for agent-driven order lifecycle management |
+
+---
+
+### 15.10 Governance Notes for Senpi Strategy Adoption
+
+1. **No Senpi strategy is pre-approved for live deployment.** All require the full §2 governance flow.
+2. **Leverage overrides require explicit SAE config change** and manual approval. Grizzly (15-20x) and Cheetah (8-12x) exceed current default `SAE_MAX_LEVERAGE`.
+3. **High-priority Phase C candidates** based on architectural alignment: Viper (§5), Croc (§6), Cobra (§4 extension), Bison (Phase B §4 expansion).
+4. **Submodule update policy:** `skills/senpi-skills` submodule should be pinned to a reviewed commit SHA. Updates require a pull request with changelog review before merging.
+5. **License:** Senpi skills are published under their upstream license (`skills/senpi-skills/LICENSE`). Review license terms before incorporating any code directly into this system.
+
+---
+
+*Document version: 1.1 — April 2026*
 *Maintainer: Network Engineering / repo owner*
 *Review cycle: Each phase gate, or when a new strategy reaches `backtesting` state*
