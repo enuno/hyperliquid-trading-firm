@@ -1,0 +1,3 @@
+[submodule "multiclaw/bankr/skills"]
+	path = multiclaw/bankr/skills
+	url = https://github.com/BankrBot/skills.git
