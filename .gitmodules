@@ -7,3 +7,6 @@
 [submodule "skills/hyperliquid-infrastructure"]
 	path = skills/hyperliquid-infrastructure
 	url = https://github.com/dwellir-public/hyperliquid-skills.git
+[submodule "skills/senpi-skills"]
+	path = skills/senpi-skills
+	url = https://github.com/Senpi-ai/senpi-skills.git
