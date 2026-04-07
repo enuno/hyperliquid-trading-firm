@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "researchclaw-skill"
+abstract: "Turn your coding agent into a one-command autonomous research paper generator. Wraps AutoResearchClaw's 23-stage pipeline with setup automation, interactive config, error diagnosis, and self-healing hooks."
+authors:
+  - family-names: Adi
+    given-names: Ahmad Othman Ammar
+    alias: OthmanAdi
+version: "1.0.0"
+date-released: "2026-03-20"
+license: MIT
+url: "https://github.com/OthmanAdi/researchclaw-skill"
+repository-code: "https://github.com/OthmanAdi/researchclaw-skill"
+keywords:
+  - claude-code
+  - agent-skill
+  - research
+  - autonomous-agents
+  - paper-generation
+  - ai-research
+  - automation
