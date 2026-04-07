@@ -1,0 +1,527 @@
+# prompts/research/market_structure.yaml
+# ========================================
+# Prompt template for ResearchAgent NIGHTLY_DIGEST jobs.
+#
+# Used by: apps/agents/src/agents/research_agent.py
+#   -> run_deep_research(mode=ResearchMode.NIGHTLY_DIGEST)
+#   Triggered by: apps/jobs/ scheduled cron (off-peak, no human gates)
+#   Also usable: ad-hoc analyst invocation for regime-change deep dives.
+#
+# Mode: ResearchMode.NIGHTLY_DIGEST
+# Gate matrix: Stage 5 = false, Stage 9 = false, Stage 20 = false
+# All gates AUTO-APPROVED. Pipeline runs to completion unattended.
+# For a full human-gated market structure deep dive, use mode: DEEP instead
+# and reference this file's scope/system_prompt as the base template.
+#
+# Primary context inputs (injected by _build_topic_prompt):
+#   {FIRM_CONTEXT}         - RL buffer / backtest snapshot (auto-prepended)
+#   {VOLATILITY_SNAPSHOT}  - JSON blob: 24h/7d realized vol, ATR, VIX analog
+#   {FUNDING_SNAPSHOT}     - JSON blob: current funding rates across tracked perps
+#   {REGIME_LABEL}         - Current regime classifier output string
+#   {LOOKBACK_WINDOW}      - Data window label (e.g. "48h", "7d", "30d")
+#
+# Output artifact: synthesis.json (summary key only for NIGHTLY_DIGEST)
+# Downstream: dashboard research panel -> Regime Context feed
+#             prompts/ context injection for Trader agent (read-only, human-gated)
+#
+# Usage (scheduled job):
+#   job = await agent.run_deep_research(
+#       topic=render_market_structure_topic(
+#           regime_label="high_funding_contango",
+#           volatility_snapshot={"btc_24h_rv": 0.62, "eth_24h_rv": 0.71},
+#           funding_snapshot={"BTC-PERP": 0.0087, "ETH-PERP": 0.0112},
+#           lookback_window="48h",
+#       ),
+#       mode=ResearchMode.NIGHTLY_DIGEST,
+#   )
+#
+# Usage (manual deep dive, all gates active):
+#   job = await agent.run_deep_research(
+#       topic=render_market_structure_topic(...),
+#       mode=ResearchMode.DEEP,  # override to enable human gates
+#   )
+# ========================================
+
+meta:
+  template_id: "market_structure_v1"
+  mode: "nightly_digest"
+  version: "1.0.0"
+  min_quality_score: 2.5        # Relaxed vs 3.5 for PROJECT_AUDIT — digest speed vs depth tradeoff
+  gate_5_required: false        # No human gates in NIGHTLY_DIGEST mode
+  gate_9_required: false
+  gate_20_required: false
+  experiment_mode: "simulated"  # Literature synthesis only; no code execution
+  schedule:
+    cron: "0 2 * * *"           # 02:00 UTC daily — low-traffic window
+    timezone: "UTC"
+    max_runtime_minutes: 90     # Hard ceiling; pipeline killed and FAILED if exceeded
+  output_artifacts:
+    - "synthesis.json"          # summary key -> dashboard Regime Context feed
+    - "citations.bib"           # retained for audit trail
+
+# ---------------------------------------------------------------------------
+# topic: Research question passed to AutoResearchClaw Stage 1.
+# Constructed at runtime by a render_market_structure_topic() helper
+# (see apps/jobs/ scheduled job script). Template here is the canonical spec.
+# ---------------------------------------------------------------------------
+topic: |
+  Market microstructure and liquidity regime analysis for HyperLiquid perpetual
+  futures over the {LOOKBACK_WINDOW} window ending at time of invocation.
+  Current regime classifier output: '{REGIME_LABEL}'.
+  Volatility context: {VOLATILITY_SNAPSHOT}
+  Funding rate context: {FUNDING_SNAPSHOT}
+
+  Research objective: Surface academic evidence on how the current regime
+  ({REGIME_LABEL}) affects optimal execution strategy, position sizing, and
+  momentum vs. mean-reversion signal reliability on perpetual futures exchanges.
+  Identify structural microstructure features of this regime (order flow
+  imbalance patterns, funding rate carry dynamics, liquidation cascade risk,
+  basis convergence speed) and cite literature on how systematic strategies
+  have historically performed in analogous regimes.
+
+topic_examples:
+  - regime_label: "high_funding_contango"
+    lookback_window: "48h"
+    rendered: >
+      Market microstructure and liquidity regime analysis for HyperLiquid
+      perpetual futures over the 48h window ending at time of invocation.
+      Current regime classifier output: 'high_funding_contango'.
+      Volatility context: {"btc_24h_rv":0.62,"eth_24h_rv":0.71,"atr_14d":1840}
+      Funding rate context: {"BTC-PERP":0.0087,"ETH-PERP":0.0112,"SOL-PERP":0.0143}
+      Research objective: Surface academic evidence on how the current regime
+      (high_funding_contango) affects optimal execution strategy, position
+      sizing, and momentum vs. mean-reversion signal reliability on perpetual
+      futures exchanges ...
+
+  - regime_label: "ranging_low_vol"
+    lookback_window: "7d"
+    rendered: >
+      Market microstructure and liquidity regime analysis for HyperLiquid
+      perpetual futures over the 7d window ending at time of invocation.
+      Current regime classifier output: 'ranging_low_vol'.
+      Volatility context: {"btc_24h_rv":0.18,"eth_24h_rv":0.21,"atr_14d":420}
+      Funding rate context: {"BTC-PERP":0.0001,"ETH-PERP":0.0003,"SOL-PERP":-0.0002}
+      Research objective: Surface academic evidence on how the current regime
+      (ranging_low_vol) affects optimal execution strategy ...
+
+  - regime_label: "liquidation_cascade_risk"
+    lookback_window: "48h"
+    rendered: >
+      Market microstructure and liquidity regime analysis for HyperLiquid
+      perpetual futures over the 48h window ending at time of invocation.
+      Current regime classifier output: 'liquidation_cascade_risk'.
+      Volatility context: {"btc_24h_rv":1.94,"eth_24h_rv":2.31,"atr_14d":5200}
+      Funding rate context: {"BTC-PERP":-0.0201,"ETH-PERP":-0.0187,"SOL-PERP":-0.0334}
+      Research objective: Surface academic evidence on how the current regime
+      (liquidation_cascade_risk) affects optimal execution strategy ...
+
+# ---------------------------------------------------------------------------
+# regime_taxonomy: Canonical regime labels emitted by the regime classifier.
+# Each label maps to a focused research angle and a set of priority keywords
+# for the literature search. The pipeline uses the active regime_label to
+# select the matching entry and prepend its keywords to the search query.
+# ---------------------------------------------------------------------------
+regime_taxonomy:
+
+  trending_bull:
+    description: "Sustained uptrend with positive funding, expanding open interest."
+    research_angle: >
+      Momentum persistence, trend-following signal decay in bull markets,
+      funding rate carry as a momentum confirmation signal, position sizing
+      under positive-expectancy regimes.
+    priority_keywords:
+      - "momentum persistence cryptocurrency futures"
+      - "trend following perpetual futures funding rate"
+      - "bull market microstructure order flow"
+      - "position sizing Kelly criterion trending regime"
+    risk_flags:
+      - "Late-trend entry timing risk"
+      - "Funding rate mean reversion at extremes"
+
+  trending_bear:
+    description: "Sustained downtrend, negative or oscillating funding, contracting OI."
+    research_angle: >
+      Short momentum signal reliability, liquidation cascade amplification,
+      funding rate inversion dynamics, drawdown control in trending bear markets.
+    priority_keywords:
+      - "short selling momentum crypto bear market"
+      - "liquidation cascade perpetual futures"
+      - "funding rate inversion short squeeze risk"
+      - "drawdown control systematic futures"
+    risk_flags:
+      - "Short squeeze risk from forced liquidations"
+      - "Negative funding convergence to zero"
+
+  ranging_low_vol:
+    description: "Low realized volatility, near-zero funding, tight bid-ask spreads."
+    research_angle: >
+      Mean-reversion signal reliability in low-volatility regimes, statistical
+      arbitrage on perpetual/spot basis, optimal market-making strategies,
+      carry strategies when funding near zero.
+    priority_keywords:
+      - "mean reversion low volatility crypto"
+      - "statistical arbitrage perpetual spot basis"
+      - "market making strategy low volatility"
+      - "range-bound regime detection systematic"
+    risk_flags:
+      - "Vol expansion breakout risk (low-vol precedes high-vol)"
+      - "Carry strategy crowding at near-zero funding"
+
+  high_funding_contango:
+    description: >
+      Elevated positive funding rates (> 0.5%/8h annualized), strong contango
+      basis, speculative long crowding.
+    research_angle: >
+      Funding rate carry trade mechanics and decay, basis convergence timing,
+      crowded long liquidation risk, hedged carry strategies (long spot / short
+      perp), optimal entry timing for mean-reversion after funding extremes.
+    priority_keywords:
+      - "funding rate carry trade perpetual futures"
+      - "contango basis convergence crypto"
+      - "crowded long liquidation risk"
+      - "hedged carry perpetual spot arbitrage"
+      - "funding rate mean reversion timing"
+    risk_flags:
+      - "Carry unwind speed risk (funding flips negative rapidly)"
+      - "Basis spread widening during market stress"
+      - "Exchange-specific funding rate manipulation risk"
+
+  high_funding_backwardation:
+    description: >
+      Elevated negative funding rates (< -0.3%/8h), strong backwardation,
+      speculative short crowding, potential short squeeze setup.
+    research_angle: >
+      Negative funding carry dynamics, short squeeze probability estimation,
+      backwardation persistence in crypto vs. commodities, optimal long entry
+      after negative funding extremes.
+    priority_keywords:
+      - "negative funding rate backwardation perpetual"
+      - "short squeeze probability estimation crypto"
+      - "backwardation persistence digital assets"
+      - "contrarian long entry funding rate extremes"
+    risk_flags:
+      - "Short squeeze velocity in illiquid altcoin perps"
+      - "Negative funding sustained longer than historical analogs"
+
+  high_vol_trending:
+    description: >
+      High realized volatility with directional momentum. Elevated ATR,
+      expanding OI, wide bid-ask spreads.
+    research_angle: >
+      Volatility-adjusted position sizing, momentum signal-to-noise ratio
+      degradation in high-vol regimes, stop-loss placement under ATR expansion,
+      execution cost impact on systematic strategies.
+    priority_keywords:
+      - "volatility adjusted position sizing futures"
+      - "momentum signal noise high volatility crypto"
+      - "ATR stop loss sizing systematic trading"
+      - "execution cost slippage high volatility"
+    risk_flags:
+      - "Slippage cost exceeds expected edge at high vol"
+      - "Momentum reversal risk at volatility peaks"
+
+  liquidation_cascade_risk:
+    description: >
+      Extreme negative funding, very high realized vol, large open interest
+      imbalance. Elevated probability of cascading liquidations.
+    research_angle: >
+      Liquidation cascade mechanics in leveraged futures markets, order book
+      depth during cascade events, circuit breaker effectiveness, regime
+      survival tactics (max drawdown controls, exposure reduction protocols).
+    priority_keywords:
+      - "liquidation cascade leveraged futures mechanics"
+      - "order book depth crash event crypto"
+      - "circuit breaker effectiveness futures exchange"
+      - "drawdown control extreme volatility systematic"
+      - "flash crash recovery crypto perpetual"
+    risk_flags:
+      - "Exchange circuit breaker latency risk"
+      - "Correlation spike to 1.0 across instruments"
+      - "Margin call feedback loop amplification"
+    # Note: This regime triggers dashboard risk alert independent of digest output.
+    # Risk council is notified via AGENTS.md §circuit_breaker protocol,
+    # NOT through ResearchAgent. This template is for background research only.
+
+  post_event_drift:
+    description: >
+      Regime following a major macro or protocol event (e.g. ETF approval,
+      protocol upgrade, exchange insolvency). Atypical order flow, elevated
+      uncertainty, regime classifier confidence low.
+    research_angle: >
+      Event-driven price drift in crypto futures, post-event volatility
+      mean-reversion timing, information asymmetry during protocol upgrades,
+      historical analog analysis for analogous macro events.
+    priority_keywords:
+      - "event driven drift crypto futures post announcement"
+      - "volatility mean reversion post event"
+      - "information asymmetry protocol upgrade pricing"
+      - "macro event impact perpetual futures basis"
+    risk_flags:
+      - "Regime classifier confidence below threshold — reduce position sizing"
+      - "News-driven gap risk outside model assumptions"
+
+# ---------------------------------------------------------------------------
+# system_prompt: LLM system context for the pipeline.
+# Tuned for speed and structure (NIGHTLY_DIGEST runs unattended at 02:00 UTC).
+# Shorter and more directive than the PROJECT_AUDIT system_prompt.
+# ---------------------------------------------------------------------------
+system_prompt: |
+  You are a quantitative market microstructure researcher embedded in an
+  institutional autonomous trading firm operating on HyperLiquid perpetual
+  futures. Your task is to produce a concise, evidence-based market structure
+  digest that informs the firm's regime-conditional strategy adjustments for
+  the next 24-48 hour trading window.
+
+  This digest runs on a nightly automated schedule with no human review gates.
+  Accuracy and citation quality are therefore your primary constraints.
+
+  Research standards:
+  - Every claim about regime behaviour must be supported by at least one
+    academic citation or a quantitative on-chain observation from the provided
+    context. Do not assert market direction.
+  - Distinguish sharply: (a) what the academic literature says about this
+    regime type generally, (b) what the provided context data shows specifically,
+    (c) what you infer from combining the two. Label each type explicitly.
+  - Preferred sources: academic papers on microstructure, futures pricing,
+    carry trades, and systematic trading. arXiv q-fin, Journal of Finance,
+    Review of Financial Studies, Journal of Futures Markets.
+  - Do not include: price targets, buy/sell recommendations, social sentiment,
+    or unverified on-chain interpretations.
+
+  Output constraints:
+  - synthesis.json summary field: 200-350 words. Tight. Every sentence must
+    be actionable or evidence-backed. No filler.
+  - The summary must end with a single 'Regime Implication' sentence stating
+    concisely what the academic literature suggests about strategy performance
+    in this regime type (not a trade recommendation).
+  - citations: minimum 5 relevant academic citations. Quality over quantity.
+
+  Safety:
+  - This digest is a READ-ONLY background research artifact.
+  - It does not authorise any position change, strategy parameter modification,
+    or risk limit adjustment. Those actions require explicit human approval.
+
+# ---------------------------------------------------------------------------
+# scope: Research dimensions for all NIGHTLY_DIGEST runs.
+# The active regime_label determines which regime_taxonomy entry's
+# priority_keywords are prepended to the literature search.
+# ---------------------------------------------------------------------------
+scope:
+  primary_dimensions:
+    - id: "regime_microstructure"
+      description: >
+        How does the identified regime (funding level, volatility level,
+        trend direction) affect order book depth, bid-ask spread dynamics,
+        and trade impact on HyperLiquid-class perp DEXes? What does the
+        academic literature say about information content of order flow
+        imbalance in this regime?
+      output_field: "summary"  # paragraph 1
+
+    - id: "signal_reliability"
+      description: >
+        Which systematic signal families (momentum, mean-reversion, carry,
+        breakout) does the academic literature identify as reliable vs.
+        degraded in the current regime type? What is the expected signal-
+        to-noise ratio degradation and why?
+      output_field: "summary"  # paragraph 2
+
+    - id: "execution_considerations"
+      description: >
+        How does the current regime affect execution cost, slippage, and
+        fill quality for systematic strategies? What position sizing or
+        order type adjustments does the literature recommend?
+      output_field: "summary"  # paragraph 3
+
+    - id: "regime_implication"
+      description: >
+        Single synthesised sentence: what does the academic literature
+        suggest about overall systematic strategy performance expectations
+        in this regime type?
+      output_field: "summary"  # final sentence (labelled 'Regime Implication:')
+
+  out_of_scope:
+    - Price direction prediction or price targets
+    - Trade recommendations (buy/sell/hold)
+    - Legal or tax classification
+    - Social sentiment or influencer commentary
+    - Any real-time data not present in provided snapshots
+
+# ---------------------------------------------------------------------------
+# literature_search: Stage 2-4 configuration.
+# Base keywords always included; regime-specific keywords prepended from
+# the active regime_taxonomy entry at runtime.
+# ---------------------------------------------------------------------------
+literature_search:
+  sources:
+    - arxiv               # q-fin.TR, q-fin.MF, q-fin.ST
+    - semantic_scholar
+    - openAlex
+  base_keywords:
+    - "perpetual futures microstructure"
+    - "crypto futures funding rate"
+    - "systematic trading regime detection"
+    - "order flow imbalance price impact"
+    - "HyperLiquid decentralized perpetual"
+    - "cryptocurrency liquidity regime"
+    - "basis trading carry crypto"
+    - "volatility regime switching systematic"
+  max_papers: 25          # Capped for nightly speed; increase for DEEP mode runs
+  min_citation_year: 2018 # Post-BitMEX perpetual futures literature
+  preferred_venues:
+    - "Journal of Finance"
+    - "Review of Financial Studies"
+    - "Journal of Futures Markets"
+    - "Journal of Financial Economics"
+    - "arXiv q-fin"
+
+# ---------------------------------------------------------------------------
+# experiment_design: Simulated synthesis only.
+# No code execution for NIGHTLY_DIGEST — speed and reliability over depth.
+# For quantitative regime analysis, use mode: DEEP with experiment_mode: sandbox.
+# ---------------------------------------------------------------------------
+experiment_design:
+  mode: "simulated"
+  rationale: >
+    NIGHTLY_DIGEST runs unattended at 02:00 UTC with a 90-minute ceiling.
+    Simulated synthesis from literature + on-chain snapshots is sufficient
+    for the digest use case. Quantitative backtesting of regime-conditional
+    strategies belongs in STRATEGY_SCAN or COMPETITIVE_BACKTEST jobs, which
+    are initiated manually by analysts during business hours.
+
+# ---------------------------------------------------------------------------
+# output_schema: synthesis.json structure for NIGHTLY_DIGEST jobs.
+# Simpler than PROJECT_AUDIT — summary-focused, no nested subsections.
+# Consumed by the dashboard Regime Context feed and the digest registry.
+# ---------------------------------------------------------------------------
+output_schema:
+  synthesis_json:
+    regime_label:
+      type: string
+      description: "Active regime label. Must match the input {REGIME_LABEL} exactly."
+      example: "high_funding_contango"
+    lookback_window:
+      type: string
+      description: "Data window used. Must match the input {LOOKBACK_WINDOW}."
+      example: "48h"
+    summary:
+      type: string
+      description: >
+        Evidence-based regime digest (200-350 words). Structure:
+        Paragraph 1: Microstructure features of this regime (order book, spread, impact).
+        Paragraph 2: Signal reliability — which families work/degrade and why.
+        Paragraph 3: Execution considerations (sizing, order types, cost).
+        Final sentence: 'Regime Implication: <single synthesised claim>.'
+    volatility_context_received:
+      type: object
+      description: "Echo of the {VOLATILITY_SNAPSHOT} input for audit traceability."
+    funding_context_received:
+      type: object
+      description: "Echo of the {FUNDING_SNAPSHOT} input for audit traceability."
+    risk_flags:
+      type: list
+      description: >
+        Regime-specific risk flags from the regime_taxonomy entry for the
+        active regime_label. Populated at Stage 1 from this template.
+      items:
+        flag: string
+        severity: "low | medium | high"
+    citations:
+      type: list
+      description: "Academic citations supporting the summary. Minimum 5."
+      items:
+        key: string
+        title: string
+        authors: list
+        year: number
+        venue: string
+        url: string
+    quality_score:
+      type: number
+      description: >
+        AutoResearchClaw quality score (0-5). No gate at Stage 20 for
+        NIGHTLY_DIGEST, but score is still emitted and logged.
+        Jobs scoring below 2.0 are flagged in the digest registry for
+        analyst review the following morning.
+      minimum: 0.0
+      maximum: 5.0
+    low_quality_flag:
+      type: boolean
+      description: >
+        Set to true if quality_score < 2.0. Triggers a dashboard warning
+        on the Regime Context feed. Does NOT suppress the digest output —
+        analysts decide whether to discount it.
+
+# ---------------------------------------------------------------------------
+# downstream_consumers: How digest output is used after synthesis.json lands.
+# All paths are READ-ONLY. No automated strategy parameter changes.
+# ---------------------------------------------------------------------------
+downstream_consumers:
+
+  dashboard_regime_context_feed:
+    consumes:
+      - regime_label
+      - summary
+      - risk_flags
+      - quality_score
+      - low_quality_flag
+    display: "Dashboard -> Regime Context panel (top of research feed)"
+    refresh: "Replaced on each successful nightly run"
+    note: >
+      The dashboard shows the most recent completed digest. If the nightly
+      job fails (FAILED status), the previous night's digest remains visible
+      with a staleness warning showing hours since last update.
+
+  digest_registry:
+    consumes: "Full synthesis.json"
+    path: "logs/research/artifacts/{job_id}/synthesis.json"
+    note: >
+      All nightly digests are retained in the artifact registry.
+      The dashboard Regime Context panel links to historical digests
+      for trend analysis across regime transitions.
+
+  strategy_prompt_context:
+    consumes:
+      - summary
+      - regime_label
+      - risk_flags
+    gate: "Human approval required before injection into Trader agent prompts"
+    note: >
+      Analyst may manually promote a digest's summary into the Trader agent's
+      system prompt context via the dashboard. This is never done automatically.
+      The OPRO meta-prompt optimization loop may reference recent digests as
+      context in {WINDOW_SUMMARY}, but only via the approved prompt-policy path.
+      See: apps/agents/src/types/prompt-policy.ts
+
+  iteration_loop_context:
+    consumes:
+      - regime_label
+      - risk_flags
+    gate: "Regime label is READ from logs/ by iteration_loop.py — no write path"
+    note: >
+      The iteration loop reads regime_label from the most recent completed
+      digest to select regime-conditional hyperparameter search bounds.
+      This is a read-only relationship; the digest never modifies iteration
+      loop config files directly.
+
+# ---------------------------------------------------------------------------
+# quality_fallback: Behaviour when a nightly run scores below threshold
+# or fails entirely. Documents operational response protocol.
+# ---------------------------------------------------------------------------
+quality_fallback:
+  score_below_2_0:
+    action: "Set low_quality_flag: true in synthesis.json"
+    dashboard: "Yellow warning banner on Regime Context feed"
+    analyst_action: "Optional manual review next morning; no automated response"
+
+  pipeline_failed:
+    action: "FAILED status in registry; previous digest retained on dashboard"
+    dashboard: "Red staleness warning: 'Digest unavailable — last updated N hours ago'"
+    analyst_action: "Check logs/research/artifacts/{job_id}/ for error details"
+    retry: "Manual retry via: await agent.run_deep_research(..., mode=ResearchMode.NIGHTLY_DIGEST)"
+
+  consecutive_failures_3:
+    action: "Alert appended to logs/audit.jsonl with event_type: digest_consecutive_failure"
+    dashboard: "Persistent warning until next successful digest"
+    analyst_action: "Investigate bridge config and AutoResearchClaw pipeline health"
+    # Note: Does NOT trigger circuit breaker or any trading halt.
+    # Digest failure is a research degradation event, not an execution-path event.
