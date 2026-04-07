@@ -1,6 +1,0 @@
-[submodule "multiclaw/bankr/skills"]
-	path = multiclaw/bankr/skills
-	url = https://github.com/BankrBot/skills.git
-[submodule "multiclaw/hyperliquid-claw"]
-	path = multiclaw/hyperliquid-claw
-	url = https://github.com/Rohit24567/HyperLiquid-Claw
