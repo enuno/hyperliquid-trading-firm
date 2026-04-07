@@ -1,0 +1,294 @@
+# =============================================================================
+# MetaClaw Configuration — HyperLiquid Trading Firm
+# =============================================================================
+#
+# Maps 1:1 to MetaClawConfig dataclass (metaclaw/metaclaw/config.py).
+# Field names, types, and defaults are sourced directly from that file.
+#
+# ENVIRONMENT VARIABLES — never hardcode secrets here:
+#
+#   Required (RL / skills_only mode):
+#     METACLAW_LLM_BASE_URL    Upstream LLM base URL (OpenAI-compat /v1)
+#     METACLAW_LLM_API_KEY     Bearer token for upstream LLM
+#     METACLAW_LLM_MODEL_ID    Model name forwarded by proxy
+#     METACLAW_API_KEY         Proxy bearer token (set on all agent callers)
+#
+#   Required (RL / auto mode — Tinker backend):
+#     METACLAW_TINKER_URL      Tinker sampling endpoint (default: localhost:8080)
+#
+#   Required (PRM judge):
+#     METACLAW_PRM_API_KEY     Bearer token for PRM judge endpoint
+#
+#   Required (OPD teacher — only when use_opd: true):
+#     METACLAW_TEACHER_API_KEY Bearer token for OPD teacher endpoint
+#
+#   Optional (evolver override — defaults to llm_* values if blank):
+#     METACLAW_EVOLVER_API_KEY Override for skill evolver (leave unset to reuse llm key)
+#
+# DEPLOYMENT NOTE:
+#   Load with:  metaclaw start --config multiclaw/metaclaw/config.trading-firm.yaml
+#   Or in code: MetaClawConfig(**yaml.safe_load(open("config.trading-firm.yaml")))
+#
+# PHASE GUIDE — use mode: to control deployment phase:
+#   Phase 1 (smoke test, zero risk):   mode: skills_only
+#   Phase 2 (RL, paper-trade pod):     mode: rl
+#   Phase 3 (full auto, production):   mode: auto
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# Operating Mode
+# ---------------------------------------------------------------------------
+# "auto"        — RL + scheduler: trains during idle/sleep windows only
+# "rl"          — RL without scheduler: trains immediately on full batch
+# "skills_only" — proxy + skill injection only (no Tinker, no RL)
+#
+# START HERE: skills_only for Phase 1 smoke test. No GPU, no Tinker needed.
+# Flip to "auto" once skills baseline is established (10+ sessions).
+mode: skills_only
+
+# When true (RL/auto only): pause autonomous collection loop; require
+# manual  `metaclaw train-step`  or  POST /v1/admin/train-step  to trigger
+# each RL update. Useful for gated paper-trade validation before going live.
+manual_train_trigger: false
+
+
+# ---------------------------------------------------------------------------
+# Model (Tinker RL backend — only used in "rl" and "auto" modes)
+# ---------------------------------------------------------------------------
+model_name: moonshotai/Kimi-K2.5       # student model for GRPO LoRA fine-tuning
+lora_rank: 32                           # LoRA rank; 32 = good quality/VRAM balance
+renderer_name: qwen3                    # tinker renderer: qwen3 | llama3 | role_colon
+
+# Optionally resume from a prior checkpoint (leave blank on first run):
+resume_from_ckpt: ""                    # e.g. tinker://.../weights/step_0050
+
+
+# ---------------------------------------------------------------------------
+# Training Hyperparameters (RL / auto modes)
+# ---------------------------------------------------------------------------
+learning_rate: 1.0e-4
+batch_size: 4                           # ConversationSamples per training step
+max_steps: 2000                         # total RL training steps per deployment cycle
+loss_fn: importance_sampling            # ppo | importance_sampling | cispo
+save_weights_timeout_s: 200.0           # seconds before sampling-client refresh timeout
+
+
+# ---------------------------------------------------------------------------
+# Reward / PRM Judge
+# ---------------------------------------------------------------------------
+use_prm: true
+prm_provider: openai                    # "openai" (any OpenAI-compat URL) | "bedrock"
+
+# PRM judge endpoint — any OpenAI-compatible base URL:
+# Point at your firm's LLM gateway or a dedicated frontier model endpoint.
+# Must NOT be the same endpoint as the student model (separate inference pool).
+prm_url: ${METACLAW_PRM_BASE_URL:-https://api.openai.com/v1}
+prm_model: gpt-5.2                      # frontier model as process reward model judge
+prm_api_key: ${METACLAW_PRM_API_KEY}    # injected at runtime — never hardcode
+
+# Majority-vote PRM settings:
+prm_m: 3                                # number of judge samples for majority vote
+prm_temperature: 0.6                    # judge sampling temperature
+prm_max_new_tokens: 1024                # max judge response tokens
+
+# OPD — On-Policy Distillation (teacher logprob signal):
+# Enables continuous distillation from a large frontier teacher into the
+# deployed student. Set use_opd: true in Phase 2+. Requires teacher endpoint.
+use_opd: false                          # flip to true in Phase 2 (RL mode)
+teacher_url: ${METACLAW_TEACHER_BASE_URL:-}
+teacher_model: claude-opus-4            # large frontier teacher; pin version explicitly
+teacher_api_key: ${METACLAW_TEACHER_API_KEY:-}
+kl_penalty_coef: 1.0                    # KL divergence penalty weight for OPD
+
+
+# ---------------------------------------------------------------------------
+# Proxy / API Server
+# ---------------------------------------------------------------------------
+# All OpenClaw-compatible analyst agents route through this proxy port.
+# Proxy intercepts every request, injects skills, records the session,
+# and feeds completed sessions into the async RL pipeline.
+proxy_port: 30000
+proxy_host: 0.0.0.0
+served_model_name: kimi-k2-5            # model name advertised by proxy to callers
+
+# Tinker sampling backend (RL / auto modes only):
+tinker_sampling_url: ${METACLAW_TINKER_URL:-http://localhost:8080}
+
+# Proxy bearer token — ALL agent callers must set:
+#   Authorization: Bearer <METACLAW_API_KEY>
+api_key: ${METACLAW_API_KEY}            # injected at runtime
+
+# Session recording — essential for audit trail and RL replay:
+record_enabled: true
+record_dir: logs/metaclaw/records/      # JSONL session records per proxy conversation
+
+
+# ---------------------------------------------------------------------------
+# Upstream LLM (skills_only forwarding + skill evolver)
+# ---------------------------------------------------------------------------
+# Provider for the upstream LLM the proxy forwards to in skills_only mode.
+# In RL/auto mode this also drives the evolver (unless evolver_* overrides set).
+llm_provider: custom                    # "custom" = any OpenAI-compat API
+llm_auth_method: api_key               # "api_key" | "oauth_token"
+llm_api_base: ${METACLAW_LLM_BASE_URL}  # e.g. https://api.moonshot.cn/v1
+llm_api_key: ${METACLAW_LLM_API_KEY}    # injected at runtime
+llm_model_id: ${METACLAW_LLM_MODEL_ID}  # e.g. moonshotai/Kimi-K2.5
+
+
+# ---------------------------------------------------------------------------
+# Skill Evolver (LLM used to generate/refine skills — defaults to llm_* above)
+# ---------------------------------------------------------------------------
+evolver_provider: openai                # "openai" (any compat URL) | "bedrock"
+evolver_api_base: ""                    # leave blank to reuse llm_api_base
+evolver_api_key: ${METACLAW_EVOLVER_API_KEY:-}  # leave blank to reuse llm_api_key
+evolver_model_id: ""                    # leave blank to reuse llm_model_id
+bedrock_region: us-east-1               # used only when prm_provider or evolver = "bedrock"
+skill_evolution_history_path: logs/metaclaw/skills/evolution_history.jsonl
+
+
+# ---------------------------------------------------------------------------
+# Skills
+# ---------------------------------------------------------------------------
+# Pre-seed skills_dir from tradingprogram.md constraints and known failure
+# modes before first deployment. MetaClaw will auto-evolve from there.
+#
+# Skills library layout (Markdown files, one skill per file):
+#
+#   multiclaw/metaclaw/skills/
+#   ├── regime-detection/
+#   │   ├── trending-bull-entry-timing.md
+#   │   ├── high-funding-rate-avoidance.md
+#   │   └── liquidation-cascade-risk-awareness.md
+#   ├── execution/
+#   │   ├── maker-order-preference-fee-reduction.md
+#   │   ├── limit-offset-bps-calculation.md
+#   │   └── slippage-budget-enforcement.md
+#   ├── risk/
+#   │   ├── kelly-position-sizing-perps.md
+#   │   ├── drawdown-kill-switch-trigger.md
+#   │   └── max-concurrent-positions.md
+#   └── strategy/
+#       ├── ema-cross-failure-modes.md
+#       ├── rsi-reversal-regime-dependency.md
+#       └── funding-rate-basis-awareness.md
+
+use_skills: true
+skills_dir: multiclaw/metaclaw/skills/  # project-relative skills library (seed manually)
+retrieval_mode: embedding               # "template" (fast, keyword) | "embedding" (semantic)
+embedding_model_path: Qwen/Qwen3-Embedding-0.6B
+
+# Injection limits:
+skill_top_k: 8                          # general skills injected per turn
+task_specific_top_k: 12                 # task-specific skills cap per turn
+
+# Auto-evolution of skills from live sessions:
+enable_skill_evolution: true
+skill_evolution_every_n_turns: 10       # run skill evolver every N main conversation turns
+skill_update_threshold: 0.4             # trigger evolution when success rate < threshold
+max_new_skills: 3                       # max new skills extracted per evolution cycle
+
+
+# ---------------------------------------------------------------------------
+# Memory
+# ---------------------------------------------------------------------------
+# Cross-session persistent memory — captures per-agent patterns, strategy
+# outcomes, and regime-specific observations across trading sessions.
+memory_enabled: true
+memory_dir: logs/metaclaw/memory/store/
+memory_store_path: logs/metaclaw/memory/store/memory.db
+memory_scope: trading-firm              # isolate memory to this deployment scope
+memory_retrieval_mode: hybrid           # "keyword" | "hybrid" | "embedding"
+
+# Embedding config for memory retrieval:
+memory_use_embeddings: true
+memory_embedding_mode: semantic         # "hashing" (fast) | "semantic" (quality)
+memory_embedding_model: all-MiniLM-L6-v2
+memory_embedding_model_path: Qwen/Qwen3-Embedding-0.6B
+
+# Memory policy and telemetry:
+memory_policy_path: logs/metaclaw/memory/store/policy.json
+memory_telemetry_path: logs/metaclaw/memory/store/telemetry.jsonl
+
+# Auto-upgrade (promotes memory units to skills after review):
+memory_auto_upgrade_enabled: true
+memory_auto_upgrade_interval_seconds: 900   # check every 15 minutes
+memory_auto_upgrade_require_review: true    # require human review before promotion
+memory_review_stale_after_hours: 72         # flag stale reviews after 3 days
+
+# Injection limits per turn:
+memory_max_injected_units: 6
+memory_max_injected_tokens: 800
+
+# Ingestion behaviour:
+memory_auto_extract: true              # auto-extract memory from session_done events
+memory_auto_consolidate: true          # consolidate redundant units periodically
+memory_ignore_turn_type: false         # only buffer main turns (not side/system turns)
+memory_manual_trigger: false           # auto-ingest on session_done (not manual POST)
+
+
+# ---------------------------------------------------------------------------
+# Skill-Memory Synergy
+# ---------------------------------------------------------------------------
+# When both skills and memory are enabled, synergy coordinates their combined
+# injection within a shared token budget to avoid prompt bloat.
+synergy_enabled: true
+synergy_token_budget: 1200             # combined cap: skills + memory tokens per turn
+synergy_skill_ratio: 0.35              # skills get 35% of budget; memory gets 65%
+synergy_dedup_threshold: 0.5           # Jaccard overlap threshold to drop duplicate memory
+
+
+# ---------------------------------------------------------------------------
+# Context Window
+# ---------------------------------------------------------------------------
+# Hard cap on prompt token count. Must be <= Tinker's max_seq_len minus
+# headroom for the model's response. Kimi-K2.5 context: 128k tokens.
+# Leave generous headroom for multi-turn trading conversations.
+max_context_tokens: 20000
+
+
+# ---------------------------------------------------------------------------
+# Scheduler (auto mode only)
+# ---------------------------------------------------------------------------
+# Gates RL weight updates to idle windows only — trading sessions are never
+# interrupted. Conservative bounds: outside all major trading session overlaps.
+#
+# Session overlap reference (UTC):
+#   Asia (Tokyo/HK): 00:00–09:00 UTC
+#   Europe (London): 07:00–16:00 UTC
+#   US (New York):   13:00–22:00 UTC
+#   Peak overlap:    13:00–16:00 UTC (EU/US)
+#
+# Safe idle window: 22:30–06:30 UTC (after US close, before Asia open)
+scheduler_enabled: true
+scheduler_idle_threshold_minutes: 20   # require 20 min keyboard/API inactivity
+scheduler_sleep_start: "22:30"         # HH:MM UTC — after US close
+scheduler_sleep_end: "06:30"           # HH:MM UTC — before Asia pre-market
+scheduler_min_window_minutes: 15       # minimum window for a single RL step
+
+# Optional Google Calendar integration (block RL during scheduled meetings):
+scheduler_calendar_enabled: false
+scheduler_calendar_credentials_path: ""
+scheduler_calendar_token_path: ""
+
+
+# ---------------------------------------------------------------------------
+# Programmatic Task Rollout (OpenClaw env-style, optional)
+# ---------------------------------------------------------------------------
+# Leave openclaw_env_data_dir blank for passive proxy mode (recommended for
+# Phase 1 and Phase 2). Only populate when running programmatic RL rollout
+# against the curriculum task JSONL output from evolution_curriculum_agent.
+#
+# When wired to Agent0 curriculum output:
+#   openclaw_env_data_dir: logs/evolution/artifacts/<round_id>/tasks/
+openclaw_env_data_dir: ""              # populated by EvolutionOrchestrator in Phase 3
+openclaw_env_split: train
+openclaw_env_concurrency: 4            # parallel episode workers
+openclaw_env_max_steps: 15             # max turns per curriculum episode
+openclaw_env_python_path: ""           # unused (compatibility only)
+
+
+# ---------------------------------------------------------------------------
+# WeChat Plugin
+# ---------------------------------------------------------------------------
+wechat_enabled: false                  # not required for trading firm deployment
